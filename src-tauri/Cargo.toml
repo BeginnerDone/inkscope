@@ -1,0 +1,28 @@
+[package]
+name = "inkscope"
+version = "0.2.0"
+description = "AI professional novel analysis workspace"
+authors = ["InkScope"]
+edition = "2021"
+
+[lib]
+name = "inkscope_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rusqlite = { version = "0.37", features = ["bundled"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "charset"] }
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }
+regex = "1"
+html-escape = "0.2"
+scraper = "0.24"
+futures = "0.3"
+urlencoding = "2"
+zip = { version = "2", default-features = false, features = ["deflate"] }
