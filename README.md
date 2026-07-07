@@ -6,7 +6,34 @@ InkScope 是一个写给小说作者的本地 AI 拆书与阅读客户端。
 
 当前版本基于 React + Tauri 2 + Rust + SQLite + DeepSeek。
 
-![InkScope 软件截图](docs/screenshot.png)
+## 软件截图
+
+<table>
+  <tr>
+    <td width="50%">
+      <img src="docs/bookshelf.png" alt="InkScope 书架" />
+      <br />
+      <sub>本地书架：一书一库，阅读与报告入口集中管理。</sub>
+    </td>
+    <td width="50%">
+      <img src="docs/source-search.png" alt="InkScope 书源搜索" />
+      <br />
+      <sub>书源搜索：同步 Legado 书源，按小说名选择目标并导入。</sub>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%">
+      <img src="docs/reader.png" alt="InkScope 本地阅读器" />
+      <br />
+      <sub>本地阅读器：章节目录、全文阅读、导出与分析入口。</sub>
+    </td>
+    <td width="50%">
+      <img src="docs/report.png" alt="InkScope 拆书报告" />
+      <br />
+      <sub>拆书报告：结构评分、写作技法、期待爽感与大纲模板。</sub>
+    </td>
+  </tr>
+</table>
 
 ## 核心能力
 
