@@ -6,6 +6,8 @@ InkScope 是一个写给小说作者的本地 AI 拆书与阅读客户端。
 
 当前版本基于 React + Tauri 2 + Rust + SQLite + DeepSeek。
 
+![InkScope 软件截图](docs/screenshot.png)
+
 ## 核心能力
 
 - 本地书架：每本书一个独立 SQLite 数据库。
@@ -163,4 +165,3 @@ npm run tauri:build
 InkScope 面向个人本地阅读和写作学习。请只导入你拥有合法阅读和私人分析权限的内容。不要把受版权保护的全文、报告或导出文件用于未授权传播。
 
 ## License
-
