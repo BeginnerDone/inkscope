@@ -1,6 +1,6 @@
 [package]
 name = "inkscope"
-version = "0.2.0"
+version = "0.2.1"
 description = "AI professional novel analysis workspace"
 authors = ["InkScope"]
 edition = "2021"

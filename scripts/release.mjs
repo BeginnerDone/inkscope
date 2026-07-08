@@ -16,7 +16,8 @@ const run = (cmd, cmdArgs = [], options = {}) => {
     console.log(`[dry-run] ${printable}`)
     return ''
   }
-  return execFileSync(cmd, cmdArgs, { encoding: 'utf8', stdio: options.stdio || 'pipe' }).trim()
+  const output = execFileSync(cmd, cmdArgs, { encoding: 'utf8', stdio: options.stdio || 'pipe' })
+  return typeof output === 'string' ? output.trim() : ''
 }
 
 const readJson = path => JSON.parse(readFileSync(path, 'utf8'))
