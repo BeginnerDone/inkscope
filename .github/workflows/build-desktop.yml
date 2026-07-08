@@ -1,0 +1,73 @@
+name: Build desktop packages
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+
+jobs:
+  build:
+    name: Build ${{ matrix.platform.name }}
+    runs-on: ${{ matrix.platform.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - name: macOS
+            runner: macos-latest
+            bundles: app,dmg
+          - name: Windows
+            runner: windows-latest
+            bundles: nsis,msi
+          - name: Linux
+            runner: ubuntu-22.04
+            bundles: deb,appimage
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libssl-dev
+
+      - name: Install JavaScript dependencies
+        run: npm ci
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version "^2.0" --locked
+
+      - name: Build desktop package
+        run: cargo tauri build --bundles ${{ matrix.platform.bundles }}
+
+      - name: Upload bundles
+        uses: actions/upload-artifact@v4
+        with:
+          name: inkscope-${{ matrix.platform.name }}
+          path: |
+            src-tauri/target/release/bundle/**/*
+          if-no-files-found: error

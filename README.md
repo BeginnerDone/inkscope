@@ -150,17 +150,62 @@ npm run dev
 npm run build
 ```
 
+本机打包当前系统客户端：
+
+```bash
+npm run tauri:build
+```
+
+Tauri 桌面包通常需要在对应操作系统上构建：
+
+- macOS：在 macOS 上生成 `.app` / `.dmg`
+- Windows：在 Windows 上生成 `.msi` / NSIS 安装包
+- Linux：在 Linux 上生成 `.deb` / AppImage
+
+本仓库已提供 GitHub Actions 工作流：
+
+```text
+.github/workflows/build-desktop.yml
+```
+
+推送到 `main`、推送 `v*` tag，或在 GitHub Actions 页面手动运行 `Build desktop packages`，即可分别在 macOS、Windows 和 Ubuntu runner 上产出构建产物。构建结果会作为 workflow artifacts 上传。
+
+## 发布版本
+
+发布脚本会自动完成版本号同步、CHANGELOG 生成、release commit 和 git tag。
+
+预览下一次 patch release：
+
+```bash
+npm run release -- patch --dry-run
+```
+
+生成本地 release commit 和 tag：
+
+```bash
+npm run release -- patch
+```
+
+也可以指定 `minor`、`major` 或明确版本号：
+
+```bash
+npm run release -- minor
+npm run release -- 0.3.0
+```
+
+生成并推送到 GitHub：
+
+```bash
+npm run release:push -- patch
+```
+
+推送 tag 后会触发 `.github/workflows/build-desktop.yml`，自动构建 macOS、Windows 和 Linux 安装包，并上传到 GitHub Actions artifacts。
+
 Rust 测试：
 
 ```bash
 cd src-tauri
 cargo test
-```
-
-打包客户端：
-
-```bash
-npm run tauri:build
 ```
 
 ## 项目结构
