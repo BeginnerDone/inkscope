@@ -1,5 +1,6 @@
 import { deflateSync } from 'node:zlib'
-import { writeFileSync } from 'node:fs'
+import { mkdirSync, writeFileSync } from 'node:fs'
+import { dirname } from 'node:path'
 
 const width = 512, height = 512
 const raw = Buffer.alloc((width * 4 + 1) * height)
@@ -52,4 +53,26 @@ const header = Buffer.alloc(13)
 header.writeUInt32BE(width, 0); header.writeUInt32BE(height, 4)
 header[8] = 8; header[9] = 6
 const png = Buffer.concat([Buffer.from([137,80,78,71,13,10,26,10]), chunk('IHDR', header), chunk('IDAT', deflateSync(raw, { level: 9 })), chunk('IEND', Buffer.alloc(0))])
-writeFileSync(process.argv[2] || 'src-tauri/icons/icon.png', png)
+
+const pngPath = process.argv[2] || 'src-tauri/icons/icon.png'
+const icoPath = process.argv[3] || 'src-tauri/icons/icon.ico'
+mkdirSync(dirname(pngPath), { recursive: true })
+mkdirSync(dirname(icoPath), { recursive: true })
+writeFileSync(pngPath, png)
+
+const icoHeader = Buffer.alloc(6)
+icoHeader.writeUInt16LE(0, 0)
+icoHeader.writeUInt16LE(1, 2)
+icoHeader.writeUInt16LE(1, 4)
+
+const directory = Buffer.alloc(16)
+directory[0] = 0 // 256px
+directory[1] = 0 // 256px
+directory[2] = 0
+directory[3] = 0
+directory.writeUInt16LE(1, 4)
+directory.writeUInt16LE(32, 6)
+directory.writeUInt32LE(png.length, 8)
+directory.writeUInt32LE(icoHeader.length + directory.length, 12)
+
+writeFileSync(icoPath, Buffer.concat([icoHeader, directory, png]))
