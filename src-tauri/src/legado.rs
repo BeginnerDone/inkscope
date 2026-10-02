@@ -5,7 +5,7 @@ use scraper::{ElementRef, Html, Selector};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{collections::HashSet, fs, path::PathBuf, time::Duration};
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
 pub const DEFAULT_SOURCE_URL: &str = "https://legado.aoaostar.com/sources/b778fe6b.json";
 
@@ -42,8 +42,55 @@ pub struct SearchResult {
     pub author: String,
     pub intro: String,
     pub cover_url: String,
+    pub word_count: Option<u64>,
     pub book_url: String,
     pub import_compatible: bool,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum SearchMode {
+    #[default]
+    Keyword,
+    Author,
+}
+
+fn matches_author(author: &str, query: &str) -> bool {
+    let normalize = |text: &str| text.chars().filter(|c| !c.is_whitespace()).collect::<String>().to_lowercase();
+    let query = normalize(query);
+    !query.is_empty() && normalize(author).contains(&query)
+}
+
+// Book sources return plain counts or strings such as "123.45万字".
+// Missing, unsupported and ambiguous values must remain unknown, never zero.
+fn parse_word_count(raw: &str) -> Option<u64> {
+    static RULE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    let value: String = raw.chars().filter(|c| !c.is_whitespace() && !matches!(c, ',' | '，')).collect();
+    let rule = RULE.get_or_init(|| Regex::new(r"(?i)^(?:(?:总?字数|總?字數)[:：]?|共|约|約)?([0-9]+(?:\.[0-9]+)?)(亿|億|万|萬|千|[kwm])?字?$").unwrap());
+    let captures = rule.captures(&value)?;
+    let number: f64 = captures.get(1)?.as_str().parse().ok()?;
+    let scale = match captures.get(2).map(|m| m.as_str().to_lowercase()).as_deref() {
+        Some("亿" | "億") => 100_000_000.0,
+        Some("万" | "萬" | "w") => 10_000.0,
+        Some("千" | "k") => 1_000.0,
+        Some("m") => 1_000_000.0,
+        _ => 1.0,
+    };
+    let count = number * scale;
+    if !count.is_finite() || count > 9_007_199_254_740_991.0 { return None; }
+    Some(count.round() as u64)
+}
+
+// An absent cover must stay absent; joining an empty URL would request the search page as an image.
+fn cover_url(base: &str, raw: &str) -> String {
+    let raw = raw.trim();
+    if raw.is_empty() { return String::new(); }
+    let (path, _) = split_request(raw);
+    let url = absolute(base, path);
+    match Url::parse(&url) {
+        Ok(parsed) if matches!(parsed.scheme(), "http" | "https") => url,
+        _ => String::new(),
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -61,6 +108,24 @@ pub struct ExtractRequest {
     pub book_url: String,
     pub title: String,
     pub max_chapters: usize,
+    #[serde(default)]
+    pub progress_id: Option<String>,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DownloadProgress<'a> {
+    progress_id: &'a str,
+    completed: usize,
+    total: usize,
+    failed: usize,
+    phase: &'a str,
+}
+
+fn emit_download_progress(app: &AppHandle, id: Option<&str>, completed: usize, total: usize, failed: usize, phase: &str) {
+    if let Some(progress_id) = id {
+        let _ = app.emit("legado-download-progress", DownloadProgress { progress_id, completed, total, failed, phase });
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -72,6 +137,7 @@ pub struct ExtractedBook {
     pub source_name: String,
     pub chapter_count: usize,
     pub failed_chapters: usize,
+    pub receipt: crate::reading::Receipt,
 }
 
 #[derive(Debug, Deserialize)]
@@ -401,6 +467,12 @@ async fn search_one(source: Value, query: String) -> Result<Vec<SearchResult>, S
     let search=render_url(str_at(&source,"/searchUrl"),None,&query,1);
     let url=absolute(str_at(&source,"/bookSourceUrl"),&search);
     let body=fetch(&client()?,&source,&url).await?;
+    parse_search_results(&source, &url, &body)
+}
+
+fn parse_search_results(source: &Value, url: &str, body: &str) -> Result<Vec<SearchResult>, String> {
+    let item = source_item(source);
+    let count_rule = str_at(source, "/ruleSearch/wordCount").trim();
     let mut results=vec![];
     if body.trim_start().starts_with('{') || body.trim_start().starts_with('[') {
         let root:Value=serde_json::from_str(&body).map_err(|e| format!("JSON: {e}"))?;
@@ -409,8 +481,9 @@ async fn search_one(source: Value, query: String) -> Result<Vec<SearchResult>, S
             let path=render_url(str_at(&source,"/ruleSearch/bookUrl"),Some(&book),"",1);
             if title.is_empty() || path.is_empty() { continue; }
             results.push(SearchResult { source_key:item.key.clone(),source_name:item.name.clone(),title,
-                author:eval_json(&book,str_at(&source,"/ruleSearch/author")), intro:eval_json(&book,str_at(&source,"/ruleSearch/intro")),
-                cover_url:absolute(&url,&eval_json(&book,str_at(&source,"/ruleSearch/coverUrl"))), book_url:absolute(&url,&path), import_compatible:item.import_compatible });
+                author:if str_at(&source,"/ruleSearch/author").is_empty() { String::new() } else { eval_json(&book,str_at(&source,"/ruleSearch/author")) }, intro:eval_json(&book,str_at(&source,"/ruleSearch/intro")),
+                word_count:if count_rule.is_empty() { None } else { parse_word_count(&eval_json(&book, count_rule)) },
+                cover_url:if str_at(&source,"/ruleSearch/coverUrl").is_empty() { String::new() } else { cover_url(&url,&eval_json(&book,str_at(&source,"/ruleSearch/coverUrl"))) }, book_url:absolute(&url,&path), import_compatible:item.import_compatible });
         }
     } else {
         let doc=Html::parse_document(&body); let root=doc.root_element();
@@ -418,15 +491,16 @@ async fn search_one(source: Value, query: String) -> Result<Vec<SearchResult>, S
             let title=eval_html(book,str_at(&source,"/ruleSearch/name")); let path=eval_html(book,str_at(&source,"/ruleSearch/bookUrl"));
             if title.is_empty() || path.is_empty(){continue}
             results.push(SearchResult { source_key:item.key.clone(),source_name:item.name.clone(),title,
-                author:eval_html(book,str_at(&source,"/ruleSearch/author")), intro:eval_html(book,str_at(&source,"/ruleSearch/intro")),
-                cover_url:absolute(&url,&eval_html(book,str_at(&source,"/ruleSearch/coverUrl"))),book_url:absolute(&url,&path),import_compatible:item.import_compatible });
+                author:if str_at(&source,"/ruleSearch/author").is_empty() { String::new() } else { eval_html(book,str_at(&source,"/ruleSearch/author")) }, intro:eval_html(book,str_at(&source,"/ruleSearch/intro")),
+                word_count:if count_rule.is_empty() { None } else { parse_word_count(&eval_html(book, count_rule)) },
+                cover_url:if str_at(&source,"/ruleSearch/coverUrl").is_empty() { String::new() } else { cover_url(&url,&eval_html(book,str_at(&source,"/ruleSearch/coverUrl"))) },book_url:absolute(&url,&path),import_compatible:item.import_compatible });
         }
     }
     Ok(results)
 }
 
-pub async fn search(app: AppHandle, query: String, source_keys: Vec<String>) -> Result<SearchResponse,String> {
-    if query.trim().is_empty(){return Err("请输入小说名".into())}
+pub async fn search(app: AppHandle, query: String, source_keys: Vec<String>, mode: SearchMode) -> Result<SearchResponse,String> {
+    if query.trim().is_empty(){return Err("请输入书名或作者".into())}
     if source_keys.is_empty(){return Err("至少选择一个书源".into())}
     if source_keys.len()>60{return Err("一次最多搜索 60 个书源".into())}
     let mut seen=HashSet::new();
@@ -435,8 +509,12 @@ pub async fn search(app: AppHandle, query: String, source_keys: Vec<String>) -> 
     let responses=stream::iter(sources.into_iter().map(|s| {let q=query.clone();async move {let name=str_at(&s,"/bookSourceName").to_string();(name,search_one(s,q).await)}})).buffer_unordered(12).collect::<Vec<_>>().await;
     let mut results=vec![];let mut failed_sources=vec![];
     for (name,response) in responses {match response{Ok(mut r)=>results.append(&mut r),Err(e)=>failed_sources.push(format!("{name}：{e}"))}}
+    if matches!(mode, SearchMode::Author) {
+        results.retain(|r| matches_author(&r.author, &query));
+    }
     results.sort_by_key(|r| (!r.title.contains(query.trim()),!r.import_compatible));
-    results.dedup_by(|a,b|a.title==b.title&&a.author==b.author&&a.book_url==b.book_url);
+    let mut identities = HashSet::new();
+    results.retain(|r| identities.insert((r.source_key.clone(), r.book_url.clone())));
     Ok(SearchResponse{results,searched_sources,failed_sources})
 }
 
@@ -489,7 +567,7 @@ pub async fn preview_toc(app:AppHandle,request:PreviewRequest)->Result<Vec<Remot
         let body=fetch(&client,&source,&page_url).await.map_err(|e|format!("目录第 {page} 页读取失败: {e}"))?;
         let(items,next)=parse_toc_page(&body,&source,&page_url,chapters.len(),usize::MAX);
         chapters.extend(items.into_iter().map(|(position,title,chapter_url)|RemoteChapter{position,title,chapter_url}));
-        let Some(next)=next else{break};page_url=next;page+=1;
+        let Some(next)=next else{break};if visited.contains(&next){return Err("目录分页循环，无法确认完整目录".into())}page_url=next;page+=1;
     }
     if chapters.is_empty(){return Err("书源返回了空目录，规则可能已经失效".into())}Ok(chapters)
 }
@@ -507,29 +585,110 @@ fn clean_preview_text(raw:&str)->String{
 pub async fn extract(app:AppHandle,request:ExtractRequest)->Result<ExtractedBook,String>{
     let sources=load_sources(&app)?;let source=sources.into_iter().find(|s|source_key(s)==request.source_key).ok_or("书源已不存在，请重新同步")?;
     let item=source_item(&source);if !item.import_compatible{return Err(format!("{}：{}",item.name,item.reason))}
-    let client=client()?;let toc_url=resolve_toc(&client,&source,&request.book_url).await?;
-    // 0 means every chapter returned by the source. A limit is only an explicit
-    // user-selected diagnostic mode; professional analysis defaults to the full work.
-    let limit=if request.max_chapters==0{usize::MAX}else{request.max_chapters};let mut chapters:Vec<(usize,String,String)>=vec![];
-    let mut page_url=toc_url.clone();let mut visited=HashSet::new();let mut page_number=1usize;
-    while chapters.len()<limit&&visited.insert(page_url.clone()){
-        if page_number>10_000{return Err("目录分页超过 10000 页，已停止异常书源规则".into())}
-        let toc_body=fetch(&client,&source,&page_url).await.map_err(|e|format!("目录第 {page_number} 页读取失败: {e}"))?;
-        let remaining=limit.saturating_sub(chapters.len());let(chapter_page,next)=parse_toc_page(&toc_body,&source,&page_url,chapters.len(),remaining);
-        chapters.extend(chapter_page);let Some(next)=next else{break};page_url=next;page_number+=1;
-    }
-    if chapters.is_empty(){return Err("书源返回了空目录，规则可能已经失效".into())}
+    let client=client()?;
+    emit_download_progress(&app, request.progress_id.as_deref(), 0, 0, 0, "catalog");
+    let catalog=preview_toc(app.clone(),PreviewRequest{source_key:request.source_key.clone(),book_url:request.book_url.clone()}).await?;
+    let total_chapters=catalog.len();
+    let limit=if request.max_chapters==0{total_chapters}else{request.max_chapters};
+    let chapters=catalog.into_iter().take(limit).map(|chapter|(chapter.position,chapter.title,chapter.chapter_url)).collect::<Vec<_>>();
     let requested=chapters.len();let jobs=chapters.into_iter().map(|(i,name,url)|{let client=client.clone();let source=source.clone();async move{let value=fetch(&client,&source,&url).await.ok().map(|body|parse_content(&body,&source)).filter(|v|v.chars().count()>20);(i,name,value)}});
-    let mut fetched=stream::iter(jobs).buffer_unordered(8).collect::<Vec<_>>().await;fetched.sort_by_key(|x|x.0);
+    emit_download_progress(&app, request.progress_id.as_deref(), 0, requested, 0, "downloading");
+    let mut pending=stream::iter(jobs).buffer_unordered(8);
+    let mut fetched=Vec::with_capacity(requested);
+    let mut completed=0usize;
+    let mut failed=0usize;
+    while let Some(result) = pending.next().await {
+        completed += 1;
+        if result.2.is_none() { failed += 1; }
+        fetched.push(result);
+        emit_download_progress(&app, request.progress_id.as_deref(), completed, requested, failed, "downloading");
+    }
+    fetched.sort_by_key(|x|x.0);
     let failed_chapters=fetched.iter().filter(|x|x.2.is_none()).count();let chapter_count=requested-failed_chapters;
     let content=fetched.into_iter().filter_map(|(_,name,text)|text.map(|t|format!("\n\n# {name}\n\n{t}"))).collect::<String>();
     if content.chars().count()<80{return Err("章节正文均未能读取，书源规则可能失效或需要登录/JavaScript".into())}
-    Ok(ExtractedBook{title:request.title,content,source_uri:request.book_url,source_name:item.name,chapter_count,failed_chapters})
+    let receipt=crate::reading::Receipt{source_key:request.source_key,book_url:request.book_url.clone(),total_chapters,downloaded_chapters:chapter_count,failed_chapters,checked_at:crate::now()};
+    emit_download_progress(&app, request.progress_id.as_deref(), requested, requested, failed_chapters, "finished");
+    Ok(ExtractedBook{title:request.title,content,source_uri:request.book_url,source_name:item.name,chapter_count,failed_chapters,receipt})
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn author_search_matches_author_not_title_and_normalizes_query() {
+        assert!(matches_author("作者：江南", " 江 南 "));
+        assert!(matches_author("Ursula K. Le Guin", "LE GUIN"));
+        assert!(!matches_author("另一位作者", "江南"));
+        assert!(!matches_author("", "江南"));
+        assert!(!matches_author("江南", " "));
+        assert!(matches!(serde_json::from_str::<SearchMode>("\"author\"").unwrap(), SearchMode::Author));
+        assert!(serde_json::from_str::<SearchMode>("\"unknown\"").is_err());
+    }
+
+    #[test]
+    fn cover_urls_preserve_missing_and_resolve_relative_images() {
+        let base = "https://example.com/search?q=test";
+        assert_eq!(cover_url(base, " "), "");
+        assert_eq!(cover_url(base, "/covers/7.jpg"), "https://example.com/covers/7.jpg");
+        assert_eq!(cover_url(base, "//cdn.example.com/7.jpg"), "https://cdn.example.com/7.jpg");
+        assert_eq!(cover_url(base, "javascript:alert(1)"), "");
+        assert_eq!(cover_url(base, "/7.jpg,{\"headers\":{}}"), "https://example.com/7.jpg");
+    }
+
+    #[test]
+    fn search_parser_does_not_invent_missing_author_or_cover() {
+        let mut source = serde_json::json!({
+            "bookSourceName":"测试源", "bookSourceUrl":"https://example.com",
+            "searchUrl":"/search?key={{key}}",
+            "ruleSearch":{"bookList":"class.item","name":"tag.a@text","bookUrl":"tag.a@href"}
+        });
+        let html = r#"<div class="item"><a href="/book/7">江南的故事</a><img src="/cover.jpg"/><p>另一位作者</p></div>"#;
+        let books = parse_search_results(&source, "https://example.com/search", html).unwrap();
+        assert_eq!(books.len(), 1);
+        assert_eq!(books[0].cover_url, "");
+        assert_eq!(books[0].author, "");
+        assert!(!matches_author(&books[0].author, "江南"));
+        source["ruleSearch"]["author"] = Value::String("tag.p@text".into());
+        source["ruleSearch"]["coverUrl"] = Value::String("tag.img@src".into());
+        let books = parse_search_results(&source, "https://example.com/search", html).unwrap();
+        assert_eq!(books[0].author, "另一位作者");
+        assert_eq!(books[0].cover_url, "https://example.com/cover.jpg");
+    }
+
+    #[test]
+    fn parses_source_word_count_units_and_rejects_unrelated_metadata() {
+        for (raw, count) in [("128000", 128000), ("字数：1,234,567", 1234567),
+            (" 123.45 万字 ", 1234500), ("1.2亿字", 120000000), ("15.6萬字", 156000),
+            ("12K", 12000), ("1.5M", 1500000), ("12.5w", 125000), ("0", 0)] {
+            assert_eq!(parse_word_count(raw), Some(count), "{raw}");
+        }
+        for raw in ["", "未知", "连载中", "第123章", "12万阅读", "-10", "1e999", "9.99万字 / 200章"] {
+            assert_eq!(parse_word_count(raw), None, "{raw}");
+        }
+    }
+
+    #[test]
+    fn search_word_count_uses_source_rules_for_json_and_html() {
+        let json_source = serde_json::json!({
+            "bookSourceName":"测试源", "bookSourceUrl":"https://example.com", "searchUrl":"/search?key={{key}}",
+            "ruleSearch":{"bookList":"$.data[*]","name":"$.title","bookUrl":"/book/{{$.id}}","wordCount":"$.words"}
+        });
+        let body = r#"{"data":[{"id":1,"title":"书一","words":128000},{"id":2,"title":"书二","words":"15.6万字"},{"id":3,"title":"书三"}]}"#;
+        let books = parse_search_results(&json_source, "https://example.com/search", body).unwrap();
+        assert_eq!(books.iter().map(|b| b.word_count).collect::<Vec<_>>(), vec![Some(128000), Some(156000), None]);
+        let mut html_source = serde_json::json!({
+            "bookSourceName":"测试源", "bookSourceUrl":"https://example.com", "searchUrl":"/search?key={{key}}",
+            "ruleSearch":{"bookList":"class.item","name":"tag.a@text","bookUrl":"tag.a@href","wordCount":"tag.em@text"}
+        });
+        let body = r#"<div class="item"><a href="/book/1">书一</a><em>字数：1,234,567</em></div>"#;
+        let books = parse_search_results(&html_source, "https://example.com/search", body).unwrap();
+        assert_eq!(books[0].word_count, Some(1234567));
+        html_source["ruleSearch"].as_object_mut().unwrap().remove("wordCount");
+        let books = parse_search_results(&html_source, "https://example.com/search", body).unwrap();
+        assert_eq!(books[0].word_count, None);
+    }
 
     #[test]
     fn parses_common_json_rules() {

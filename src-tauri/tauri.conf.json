@@ -13,7 +13,7 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "InkScope · AI 拆书工作台",
+        "title": "InkScope · 阅读与灵感",
         "width": 1280,
         "height": 820,
         "minWidth": 980,
@@ -21,11 +21,11 @@
         "resizable": true,
         "fullscreen": false,
         "center": true,
-        "backgroundColor": "#f5f4f1"
+        "backgroundColor": "#ffffff"
       }
     ],
     "security": {
-      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src ipc: http://ipc.localhost"
+      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: https: http:; media-src 'self' blob:; connect-src ipc: http://ipc.localhost"
     }
   },
   "bundle": {
