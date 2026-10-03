@@ -135,7 +135,8 @@ export type ReadingCoverage = {
     characterStart: number;
     characterEnd: number;
     summary: string;
-    evidence: Array<{ quote: string; finding: string; characterStart: number }>;
+    verificationStatus?: "verified" | "partial";
+    evidence: Array<{ quote: string; finding: string; characterStart: number; verified?: boolean }>;
   }>;
 };
 export type AnalysisReport = {
