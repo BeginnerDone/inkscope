@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.2.2 - 2026-10-08
+
+- feat(reader): 新增手机模式，实现窄屏独立阅读界面 (4fcc985)
+- docs(readme): 优化AI拆书与分析相关描述 (a794e7c)
+- chore(deps): 添加新的依赖包并更新相关配置 (79db6ef)
+- ci: run desktop build only on tags (2cf4bff)
+
+
 ## v0.2.1 - 2026-07-08
 
 - fix: publish release bundles (4000367)
