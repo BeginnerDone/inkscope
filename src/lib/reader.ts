@@ -1,5 +1,6 @@
 export type ReaderTheme = "white" | "paper" | "mist" | "sage" | "night";
 export type ReaderPrefs = {
+  phoneMode: boolean;
   theme: ReaderTheme;
   fontSize: number;
   lineHeight: number;
@@ -10,6 +11,7 @@ export type ReaderPrefs = {
 
 const storageKey = "inkscope-reader-v1";
 export const defaultReaderPrefs: ReaderPrefs = {
+  phoneMode: false,
   theme: "white",
   fontSize: 17,
   lineHeight: 1.82,
@@ -28,6 +30,7 @@ export function readReaderPrefs(): ReaderPrefs {
   try {
     const stored = JSON.parse(localStorage.getItem(storageKey) || "{}");
     return {
+      phoneMode: stored.phoneMode === true,
       theme: themes.has(stored.theme) ? stored.theme : defaultReaderPrefs.theme,
       fontSize: Number.isFinite(stored.fontSize)
         ? Math.max(14, Math.min(24, stored.fontSize))

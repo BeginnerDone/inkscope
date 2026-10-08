@@ -196,6 +196,7 @@ function normalizeReport(input: AnalysisReport): AnalysisReport {
 function App() {
   const [view, setView] = useState<View>("home");
   const [readingMode, setReadingMode] = useState(false);
+  const [phoneMode, setPhoneMode] = useState(false);
   const [books, setBooks] = useState<BookSummary[]>([]);
   const [selected, setSelected] = useState<BookSummary | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -320,7 +321,7 @@ function App() {
       <SidebarProvider
         style={{ "--sidebar-width": "13.5rem" } as CSSProperties}
       >
-        {!(view === "reader" && readingMode) && (
+        {!(view === "reader" && (readingMode || phoneMode)) && (
           <AppSidebar
             view={view}
             books={books}
@@ -333,9 +334,9 @@ function App() {
           />
         )}
         <SidebarInset
-          className={`main${view === "reader" && readingMode ? " main--reader-focus" : ""}`}
+          className={`main${view === "reader" && (readingMode || phoneMode) ? " main--reader-focus" : ""}`}
         >
-          {!(view === "reader" && readingMode) && (
+          {!(view === "reader" && (readingMode || phoneMode)) && (
             <header className="topbar">
               <div className="topbar-leading">
                 <SidebarTrigger aria-label="展开或收起导航" />
@@ -434,6 +435,7 @@ function App() {
               onProgress={refreshBooks}
               focusMode={readingMode}
               onFocusChange={setReadingMode}
+              onPhoneModeChange={setPhoneMode}
             />
           )}
           {view === "analyzing" && selected && (

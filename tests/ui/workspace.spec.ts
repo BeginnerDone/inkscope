@@ -18,6 +18,7 @@ async function mockDesktop(
     coverage?: boolean;
     resumePosition?: number;
     downloadFails?: boolean;
+    holdDownloadProgress?: boolean;
   } = {},
 ) {
   await page.addInitScript(
@@ -30,6 +31,7 @@ async function mockDesktop(
       coverage,
       resumePosition,
       downloadFails,
+      holdDownloadProgress,
       preparationMode,
     }) => {
       const report = {
@@ -335,6 +337,12 @@ async function mockDesktop(
                   failed: downloadFails && completed === 3 ? 1 : 0,
                   phase: completed === 3 ? "finished" : "downloading",
                 });
+                if (holdDownloadProgress && completed === 1) {
+                  await new Promise<void>((resolve) => {
+                    (window as any).__UI_TEST__.releaseDownloadProgress =
+                      resolve;
+                  });
+                }
                 await new Promise((resolve) => setTimeout(resolve, 90));
               }
               return {
@@ -794,7 +802,7 @@ test("all sources remain accessible with pagination and the 60-source limit", as
 test("author mode, valid and broken covers, and scoped import use the selected source", async ({
   page,
 }) => {
-  await mockDesktop(page);
+  await mockDesktop(page, { holdDownloadProgress: true });
   await page.goto("/");
   await page
     .locator('[data-slot="sidebar-menu-button"]')
@@ -825,6 +833,9 @@ test("author mode, valid and broken covers, and scoped import use the selected s
     .check();
   await page.getByRole("button", { name: "加入书架", exact: true }).click();
   await expect(page.getByText(/1 \/ 3 章/)).toBeVisible();
+  await page.evaluate(() =>
+    (window as any).__UI_TEST__.releaseDownloadProgress(),
+  );
   await expect(page.locator(".reader-header h1")).toHaveText("长夜行舟");
   const calls = await page.evaluate(() => (window as any).__UI_TEST__.calls);
   expect(
@@ -846,7 +857,7 @@ test("author mode, valid and broken covers, and scoped import use the selected s
 test("failed full-book download does not add an incomplete book", async ({
   page,
 }) => {
-  await mockDesktop(page, { downloadFails: true });
+  await mockDesktop(page, { downloadFails: true, holdDownloadProgress: true });
   await page.goto("/");
   await page
     .locator('[data-slot="sidebar-menu-button"]')
@@ -860,6 +871,9 @@ test("failed full-book download does not add an incomplete book", async ({
     .check();
   await page.getByRole("button", { name: "加入书架", exact: true }).click();
   await expect(page.getByText(/1 \/ 3 章/)).toBeVisible();
+  await page.evaluate(() =>
+    (window as any).__UI_TEST__.releaseDownloadProgress(),
+  );
   await expect(page.getByText(/1 章下载失败，书籍未加入书架/)).toBeVisible();
   const commands = await page.evaluate(() =>
     (window as any).__UI_TEST__.calls.map((call: any) => call.command),
@@ -1124,6 +1138,126 @@ test("reader resumes a chapter, keeps exact word counts and offers a clean readi
   await page.screenshot({ path: "test-results/reader-980.png" });
 });
 
+test("phone reading preserves text position, offers navigation and survives reopening", async ({
+  page,
+}) => {
+  await mockDesktop(page, { resumePosition: 1 });
+  await page.goto("/");
+  await page
+    .locator('[data-slot="card"]')
+    .first()
+    .getByRole("button", { name: "阅读", exact: true })
+    .click();
+  await expect(page.locator(".chapter-heading h2")).toHaveText(
+    "第二章 雨夜来客",
+  );
+  await page.waitForTimeout(350);
+  const originalParagraph = await page
+    .locator(".reader-content")
+    .evaluate((element) => {
+      element.style.scrollBehavior = "auto";
+      element.scrollTop = 500;
+      const top = element.getBoundingClientRect().top;
+      return Array.from(
+        element.querySelectorAll<HTMLElement>("[data-paragraph]"),
+      ).find((item) => item.getBoundingClientRect().bottom > top)!.dataset
+        .paragraph;
+    });
+  await page.getByRole("button", { name: "手机模式", exact: true }).click();
+  await expect(page.locator(".reader-page")).toHaveAttribute(
+    "data-reader-layout",
+    "phone",
+  );
+  await expect(page.locator(".topbar")).toHaveCount(0);
+  await expect(page.locator(".reader-header")).toHaveCount(0);
+  await expect(page.locator(".chapter-sidebar")).toHaveCount(0);
+  await expect
+    .poll(() =>
+      page.locator(".reader-content").evaluate((element) => {
+        const top = element.getBoundingClientRect().top;
+        return Array.from(
+          element.querySelectorAll<HTMLElement>("[data-paragraph]"),
+        ).find((item) => item.getBoundingClientRect().bottom > top)?.dataset
+          .paragraph;
+      }),
+    )
+    .toBe(originalParagraph);
+  const frame = await page.locator(".reader-shell").boundingBox();
+  expect(frame!.width).toBeLessThanOrEqual(390);
+  expect(frame!.height / frame!.width).toBeGreaterThan(1.7);
+  await page.locator(".reader-content").evaluate((element) => {
+    element.scrollTop = 0;
+  });
+  await expect(page.locator(".chapter-heading")).toContainText("本章已读 0%");
+  await page.screenshot({ path: "test-results/reader-phone.png" });
+  await page.getByRole("button", { name: "目录", exact: true }).click();
+  const navigation = page.getByRole("dialog", { name: "阅读导航" });
+  await expect(navigation).toBeVisible();
+  await navigation.getByRole("tab", { name: "记录" }).click();
+  await expect(
+    navigation.getByRole("button", { name: /第二章 雨夜来客/ }),
+  ).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(navigation).toHaveCount(0);
+  await expect(page.locator(".reader-page")).toHaveAttribute(
+    "data-reader-layout",
+    "phone",
+  );
+  await page.getByRole("button", { name: "下一章", exact: true }).click();
+  await expect(page.locator(".chapter-heading h2")).toHaveText(
+    "第三章 无人站台",
+  );
+  await expect(
+    page.getByRole("button", { name: "下一章", exact: true }),
+  ).toBeDisabled();
+  await page.getByRole("button", { name: "阅读设置", exact: true }).click();
+  await page.getByRole("button", { name: /护眼.*柔和浅绿/ }).click();
+  await page.getByRole("button", { name: "放大字号" }).click();
+  await page.getByRole("button", { name: "完成", exact: true }).click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await expect(page.locator(".reader-page")).toHaveAttribute(
+    "data-reader-theme",
+    "sage",
+  );
+  await page.setViewportSize({ width: 980, height: 680 });
+  const smallFrame = await page.locator(".reader-shell").boundingBox();
+  expect(smallFrame!.y + smallFrame!.height).toBeLessThanOrEqual(680);
+  const smallContent = await page.locator(".reader-content").boundingBox();
+  expect(smallContent!.width).toBeGreaterThan(smallFrame!.width - 20);
+  expect(
+    await page
+      .locator(".reader-content")
+      .evaluate((element) => element.scrollWidth <= element.clientWidth),
+  ).toBe(true);
+  await page.screenshot({ path: "test-results/reader-phone-980.png" });
+  await page.reload();
+  await page
+    .locator('[data-slot="card"]')
+    .first()
+    .getByRole("button", { name: "阅读", exact: true })
+    .click();
+  await expect(page.locator(".reader-page")).toHaveAttribute(
+    "data-reader-layout",
+    "phone",
+  );
+  await expect(page.locator(".reader-page")).toHaveAttribute(
+    "data-reader-theme",
+    "sage",
+  );
+  await page.getByRole("button", { name: "退出手机模式" }).click();
+  await expect(page.locator(".topbar")).toBeVisible();
+  await expect(page.locator(".reader-page")).toHaveAttribute(
+    "data-reader-layout",
+    "desktop",
+  );
+  await page.getByRole("button", { name: "手机模式", exact: true }).click();
+  await page.keyboard.press("Escape");
+  await expect(page.locator(".reader-page")).toHaveAttribute(
+    "data-reader-layout",
+    "desktop",
+  );
+});
+
 test("reader speech can start, pause, resume and stop without leaving a highlight", async ({
   page,
 }) => {
@@ -1213,70 +1347,86 @@ test("online reading offers built-in voices without asking for an address", asyn
     .toContain("voiceId=aningfp");
 });
 
-test("selected text becomes a persistent inspiration clip with editable notes", async ({
-  page,
-}) => {
-  await mockDesktop(page);
-  await page.goto("/");
-  await page
-    .locator('[data-slot="card"]')
-    .first()
-    .getByRole("button", { name: "阅读", exact: true })
-    .click();
-  await expect(page.locator(".chapter-prose p").first()).toBeVisible();
-  await page.evaluate(() => {
-    const paragraphs = document.querySelectorAll(".chapter-prose p");
-    const range = document.createRange();
-    range.setStart(paragraphs[0].firstChild!, 2);
-    range.setEnd(paragraphs[1].firstChild!, 12);
-    const selection = window.getSelection()!;
-    selection.removeAllRanges();
-    selection.addRange(range);
-    paragraphs[1].dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+for (const phoneMode of [false, true]) {
+  test(`selected text becomes a persistent inspiration clip with editable notes${phoneMode ? " in phone mode" : ""}`, async ({
+    page,
+  }) => {
+    await mockDesktop(page);
+    await page.goto("/");
+    await page
+      .locator('[data-slot="card"]')
+      .first()
+      .getByRole("button", { name: "阅读", exact: true })
+      .click();
+    await expect(page.locator(".chapter-prose p").first()).toBeVisible();
+    if (phoneMode)
+      await page.getByRole("button", { name: "手机模式", exact: true }).click();
+    await page.evaluate(() => {
+      const paragraphs = document.querySelectorAll(".chapter-prose p");
+      const range = document.createRange();
+      range.setStart(paragraphs[0].firstChild!, 2);
+      range.setEnd(paragraphs[1].firstChild!, 12);
+      const selection = window.getSelection()!;
+      selection.removeAllRanges();
+      selection.addRange(range);
+      paragraphs[1].dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+    });
+    await expect(page.getByRole("button", { name: "收藏片段" })).toBeVisible();
+    await page.getByRole("button", { name: "收藏片段" }).click();
+    await expect(page.getByRole("dialog", { name: "收藏片段" })).toBeVisible();
+    await page.getByLabel("备注（可选）").fill("借鉴这里的短句节奏。");
+    await page
+      .getByRole("dialog")
+      .getByRole("button", { name: "收藏片段" })
+      .click();
+    if (phoneMode) {
+      await expect(page.getByRole("dialog")).toHaveCount(0);
+      await page.getByRole("button", { name: "目录", exact: true }).click();
+    }
+    await page.getByRole("tab", { name: "灵感集 1" }).click();
+    await expect(page.getByText("借鉴这里的短句节奏。")).toBeVisible();
+    await page.getByRole("button", { name: "编辑备注" }).click();
+    await page.getByLabel("备注（可选）").fill("人物反应也值得记录。");
+    await page.getByRole("button", { name: "保存备注" }).click();
+    await expect(page.locator(".reader-clip-main em")).toHaveText(
+      "人物反应也值得记录。",
+    );
+    await expect(page.getByRole("dialog")).toHaveCount(phoneMode ? 1 : 0);
+    await expect(page.locator("[data-sonner-toast]")).toHaveCount(0);
+    const saved = await page.evaluate(() =>
+      (window as any).__UI_TEST__.calls.find(
+        (call: any) => call.command === "save_reading_clip",
+      ),
+    );
+    expect(saved.args.input.quote.length).toBeGreaterThan(0);
+    expect(saved.args.input.note).toBe("借鉴这里的短句节奏。");
+    await page.locator(".reader-clip-main").click();
+    if (phoneMode) await expect(page.getByRole("dialog")).toHaveCount(0);
+    await expect(page.locator(".reader-active-clip")).toHaveCount(2);
+    const highlighted = await page
+      .locator(".reader-active-clip")
+      .allTextContents();
+    expect(highlighted.join("").replace(/\s/g, "")).toBe(
+      saved.args.input.quote.replace(/\s/g, ""),
+    );
+    await page.screenshot({
+      path: `test-results/${phoneMode ? "reader-phone-clips" : "reader-clips"}.png`,
+    });
+    if (phoneMode) {
+      await page
+        .getByRole("button", { name: "退出片段定位", exact: true })
+        .click();
+      await page.getByRole("button", { name: "目录", exact: true }).click();
+    } else await page.getByRole("tab", { name: "目录" }).click();
+    await expect(page.locator(".reader-active-clip")).toHaveCount(0);
+    await page.getByRole("tab", { name: "灵感集 1" }).click();
+    await page.getByRole("button", { name: /删除收藏：/ }).click();
+    await page
+      .getByRole("alertdialog")
+      .getByRole("button", { name: "删除收藏" })
+      .click();
+    await expect(
+      page.getByText("在正文中划选一段文字，即可收藏并添加备注。"),
+    ).toBeVisible();
   });
-  await expect(page.getByRole("button", { name: "收藏片段" })).toBeVisible();
-  await page.getByRole("button", { name: "收藏片段" }).click();
-  await expect(page.getByRole("dialog", { name: "收藏片段" })).toBeVisible();
-  await page.getByLabel("备注（可选）").fill("借鉴这里的短句节奏。");
-  await page
-    .getByRole("dialog")
-    .getByRole("button", { name: "收藏片段" })
-    .click();
-  await page.getByRole("tab", { name: "灵感集 1" }).click();
-  await expect(page.getByText("借鉴这里的短句节奏。")).toBeVisible();
-  await page.getByRole("button", { name: "编辑备注" }).click();
-  await page.getByLabel("备注（可选）").fill("人物反应也值得记录。");
-  await page.getByRole("button", { name: "保存备注" }).click();
-  await expect(page.locator(".reader-clip-main em")).toHaveText(
-    "人物反应也值得记录。",
-  );
-  await expect(page.getByRole("dialog")).toHaveCount(0);
-  await expect(page.locator("[data-sonner-toast]")).toHaveCount(0);
-  const saved = await page.evaluate(() =>
-    (window as any).__UI_TEST__.calls.find(
-      (call: any) => call.command === "save_reading_clip",
-    ),
-  );
-  expect(saved.args.input.quote.length).toBeGreaterThan(0);
-  expect(saved.args.input.note).toBe("借鉴这里的短句节奏。");
-  await page.locator(".reader-clip-main").click();
-  await expect(page.locator(".reader-active-clip")).toHaveCount(2);
-  const highlighted = await page
-    .locator(".reader-active-clip")
-    .allTextContents();
-  expect(highlighted.join("").replace(/\s/g, "")).toBe(
-    saved.args.input.quote.replace(/\s/g, ""),
-  );
-  await page.screenshot({ path: "test-results/reader-clips.png" });
-  await page.getByRole("tab", { name: "目录" }).click();
-  await expect(page.locator(".reader-active-clip")).toHaveCount(0);
-  await page.getByRole("tab", { name: "灵感集 1" }).click();
-  await page.getByRole("button", { name: /删除收藏：/ }).click();
-  await page
-    .getByRole("alertdialog")
-    .getByRole("button", { name: "删除收藏" })
-    .click();
-  await expect(
-    page.getByText("在正文中划选一段文字，即可收藏并添加备注。"),
-  ).toBeVisible();
-});
+}

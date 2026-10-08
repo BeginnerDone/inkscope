@@ -20,13 +20,16 @@ import {
   Focus,
   History,
   LibraryBig,
+  List,
   LoaderCircle,
   Minus,
+  Monitor,
   Plus,
   Pause,
   Play,
   Search,
   Settings2,
+  Smartphone,
   Square,
   Trash2,
   Volume2,
@@ -69,6 +72,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useReaderSpeech } from "@/lib/use-reader-speech";
+import { cn } from "@/lib/utils";
 import { builtInSpeechEngines } from "@/lib/speech-engines";
 import {
   deleteReadingClip,
@@ -125,6 +129,7 @@ export function ReaderView({
   onProgress,
   focusMode,
   onFocusChange,
+  onPhoneModeChange,
 }: {
   book: BookSummary;
   onAnalyze: () => void;
@@ -132,6 +137,7 @@ export function ReaderView({
   onProgress: () => Promise<void>;
   focusMode: boolean;
   onFocusChange: (focus: boolean) => void;
+  onPhoneModeChange: (phone: boolean) => void;
 }) {
   const [chapters, setChapters] = useState<ChapterSummary[]>([]);
   const [chapter, setChapter] = useState<ChapterDetail | null>(null);
@@ -144,8 +150,10 @@ export function ReaderView({
   const [exportOpen, setExportOpen] = useState(false);
   const [exporting, setExporting] = useState<"txt" | "docx" | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [navigationOpen, setNavigationOpen] = useState(false);
   const [speechOpen, setSpeechOpen] = useState(false);
   const [prefs, setPrefs] = useState<ReaderPrefs>(readReaderPrefs);
+  const phoneMode = prefs.phoneMode;
   const [selectedText, setSelectedText] = useState<SelectionDraft | null>(null);
   const [activeClip, setActiveClip] = useState<ReadingClip | null>(null);
   const [noteDraft, setNoteDraft] = useState<NoteDraft | null>(null);
@@ -163,18 +171,84 @@ export function ReaderView({
   const restoringRef = useRef(false);
   const pendingParagraphRef = useRef<number | null>(null);
   const chapterCacheRef = useRef(new Map<number, ChapterDetail>());
+  const layoutAnchorRef = useRef<{ paragraph: number; offset: number } | null>(
+    null,
+  );
   const callbacksRef = useRef({ onProgress, onFocusChange });
   callbacksRef.current = { onProgress, onFocusChange };
+
+  const changePhoneMode = useCallback((phone: boolean) => {
+    layoutAnchorRef.current = null;
+    const content = contentRef.current;
+    if (content && content.scrollTop > 0) {
+      const top = content.getBoundingClientRect().top;
+      const paragraph = Array.from(
+        proseRef.current?.querySelectorAll<HTMLElement>("[data-paragraph]") ??
+          [],
+      ).find((item) => item.getBoundingClientRect().bottom > top);
+      if (paragraph && paragraph.getBoundingClientRect().top <= top) {
+        const rect = paragraph.getBoundingClientRect();
+        layoutAnchorRef.current = {
+          paragraph: Number(paragraph.dataset.paragraph),
+          offset: (top - rect.top) / rect.height,
+        };
+      }
+    }
+    setNavigationOpen(false);
+    setSelectedText(null);
+    window.getSelection()?.removeAllRanges();
+    setPrefs((current) => ({ ...current, phoneMode: phone }));
+  }, []);
+
+  useEffect(() => {
+    onPhoneModeChange(phoneMode);
+  }, [phoneMode, onPhoneModeChange]);
 
   useEffect(() => {
     saveReaderPrefs(prefs);
     const content = contentRef.current;
     if (content && progressRef.current) {
-      requestAnimationFrame(() => {
-        content.scrollTop =
-          progressRef.current!.ratio *
-          Math.max(0, content.scrollHeight - content.clientHeight);
+      const current = { ...progressRef.current };
+      let restoreFrame: number | undefined;
+      const frame = requestAnimationFrame(() => {
+        restoreFrame = requestAnimationFrame(() => {
+          if (progressRef.current?.position !== current.position) return;
+          const anchor = layoutAnchorRef.current;
+          const paragraph =
+            anchor &&
+            proseRef.current?.querySelector<HTMLElement>(
+              `[data-paragraph="${anchor.paragraph}"]`,
+            );
+          let target;
+          if (paragraph && anchor) {
+            const rect = paragraph.getBoundingClientRect();
+            target =
+              content.scrollTop +
+              rect.top -
+              content.getBoundingClientRect().top +
+              anchor.offset * rect.height;
+          } else {
+            target =
+              current.ratio *
+              Math.max(0, content.scrollHeight - content.clientHeight);
+          }
+          content.scrollTo({ top: target, behavior: "instant" });
+          const maximum = Math.max(
+            0,
+            content.scrollHeight - content.clientHeight,
+          );
+          const next = maximum
+            ? Math.max(0, Math.min(1, content.scrollTop / maximum))
+            : 1;
+          progressRef.current = { position: current.position, ratio: next };
+          setRatio(next);
+          layoutAnchorRef.current = null;
+        });
       });
+      return () => {
+        cancelAnimationFrame(frame);
+        if (restoreFrame !== undefined) cancelAnimationFrame(restoreFrame);
+      };
     }
   }, [prefs]);
   useEffect(() => {
@@ -276,6 +350,7 @@ export function ReaderView({
   );
   const openChapter = useCallback(
     async (position: number, atRatio = 0, clip: ReadingClip | null = null) => {
+      setNavigationOpen(false);
       const previousSave = persistCurrent();
       await loadChapter(position, atRatio, previousSave, clip);
     },
@@ -329,17 +404,19 @@ export function ReaderView({
       const editing = target?.matches("input,textarea,[contenteditable]");
       if (
         event.key === "Escape" &&
-        focusMode &&
+        (focusMode || phoneMode) &&
         !document.querySelector('[role="dialog"],[role="alertdialog"]')
       ) {
         event.preventDefault();
-        callbacksRef.current.onFocusChange(false);
+        if (phoneMode) changePhoneMode(false);
+        else callbacksRef.current.onFocusChange(false);
       }
       if (
         (event.key === "f" || event.key === "F") &&
         !editing &&
         !event.metaKey &&
         !event.ctrlKey &&
+        !phoneMode &&
         !document.querySelector('[role="dialog"],[role="alertdialog"]')
       ) {
         event.preventDefault();
@@ -348,7 +425,7 @@ export function ReaderView({
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [focusMode]);
+  }, [focusMode, phoneMode, changePhoneMode]);
 
   const onScroll = () => {
     const content = contentRef.current;
@@ -517,14 +594,179 @@ export function ReaderView({
   const changePrefs = (part: Partial<ReaderPrefs>) =>
     setPrefs((current) => ({ ...current, ...part }));
 
+  const navigation = (
+    <aside className="chapter-sidebar">
+      <Tabs
+        value={sideTab}
+        onValueChange={(value) => {
+          setSideTab(value);
+          if (value !== "clips") setActiveClip(null);
+          if (value === "history") {
+            void persistCurrent()
+              .then(() => listReadingHistory(book.id))
+              .then(setHistory)
+              .catch((error) => setError(errorText(error)));
+          }
+        }}
+        className="reader-side-tabs"
+      >
+        <TabsList
+          variant="line"
+          aria-label="阅读侧栏"
+          className="reader-side-tablist"
+        >
+          <TabsTrigger value="chapters">目录</TabsTrigger>
+          <TabsTrigger value="history">记录</TabsTrigger>
+          <TabsTrigger value="clips">
+            灵感集{clips.length ? ` ${clips.length}` : ""}
+          </TabsTrigger>
+        </TabsList>
+        <TabsContent value="chapters" className="reader-side-panel">
+          <InputGroup className="chapter-search">
+            <InputGroupAddon>
+              <Search />
+            </InputGroupAddon>
+            <InputGroupInput
+              aria-label="搜索章节"
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="搜索章节…"
+            />
+          </InputGroup>
+          <div className="chapter-count">
+            {visible.length} 章 · 选择章节继续阅读
+          </div>
+          <div className="chapter-list">
+            {!visible.length && !busy && (
+              <p className="list-empty">没有匹配的章节</p>
+            )}
+            {visible.map((item) => (
+              <Button
+                variant={
+                  chapter?.position === item.position ? "secondary" : "ghost"
+                }
+                disabled={busy}
+                aria-current={
+                  chapter?.position === item.position ? "page" : undefined
+                }
+                key={item.position}
+                onClick={() => void openChapter(item.position)}
+              >
+                <span>{String(item.position + 1).padStart(3, "0")}</span>
+                <div>
+                  <b>{item.title}</b>
+                  <small>{formatExactWords(item.characterCount)}</small>
+                </div>
+              </Button>
+            ))}
+          </div>
+        </TabsContent>
+        <TabsContent
+          value="history"
+          className="reader-side-panel reader-side-scroll"
+        >
+          <div className="reader-side-hint">
+            <History size={15} /> 最近读过的章节与位置
+          </div>
+          {!history.length && (
+            <p className="reader-side-empty">
+              开始阅读后，这里会保存你的阅读记录。
+            </p>
+          )}
+          {history.map((item) => (
+            <Button
+              key={item.position}
+              variant="ghost"
+              className="reader-history-item"
+              onClick={() => void openChapter(item.position, item.ratio)}
+            >
+              <span>{item.title}</span>
+              <small>
+                本章 {Math.round(item.ratio * 100)}% ·{" "}
+                {new Date(item.updatedAt).toLocaleString("zh-CN")}
+              </small>
+            </Button>
+          ))}
+        </TabsContent>
+        <TabsContent
+          value="clips"
+          className="reader-side-panel reader-side-scroll"
+        >
+          <div className="reader-side-hint">
+            <LibraryBig size={15} /> 划选正文，收藏为写作素材
+          </div>
+          {activeClip && (
+            <Button
+              size="sm"
+              variant="ghost"
+              className="reader-clear-clip"
+              onClick={() => setActiveClip(null)}
+            >
+              退出片段定位
+            </Button>
+          )}
+          {!clips.length && (
+            <p className="reader-side-empty">
+              在正文中划选一段文字，即可收藏并添加备注。
+            </p>
+          )}
+          {clips.map((clip) => (
+            <div className="reader-clip" key={clip.id}>
+              <button
+                type="button"
+                className="reader-clip-main"
+                onClick={() => void jumpToClip(clip)}
+              >
+                <small>{clip.chapterTitle}</small>
+                <span>“{clip.quote}”</span>
+                {clip.note && <em>{clip.note}</em>}
+              </button>
+              <div className="reader-clip-actions">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() =>
+                    openNote(
+                      {
+                        quote: clip.quote,
+                        paragraph: clip.paragraph,
+                        clipId: clip.id,
+                      },
+                      clip.note,
+                    )
+                  }
+                >
+                  编辑备注
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  aria-label={`删除收藏：${clip.quote.slice(0, 12)}`}
+                  onClick={() => setDeleteTarget(clip)}
+                >
+                  <Trash2 />
+                </Button>
+              </div>
+            </div>
+          ))}
+        </TabsContent>
+      </Tabs>
+    </aside>
+  );
+
   return (
     <div
-      className={`reader-page${focusMode ? " reader-page--focus" : ""}`}
+      className={cn(
+        "reader-page",
+        focusMode && "reader-page--focus",
+        phoneMode && "reader-page--phone",
+      )}
+      data-reader-layout={phoneMode ? "phone" : "desktop"}
       data-reader-theme={prefs.theme}
       data-reader-font={prefs.serif ? "serif" : "sans"}
       style={readerStyle}
     >
-      {!focusMode && (
+      {!focusMode && !phoneMode && (
         <header className="reader-header">
           <div className="reader-identity">
             <div className="eyebrow">
@@ -593,6 +835,14 @@ export function ReaderView({
             </Button>
             <Button
               size="sm"
+              variant="outline"
+              onClick={() => changePhoneMode(true)}
+            >
+              <Smartphone data-icon="inline-start" />
+              手机模式
+            </Button>
+            <Button
+              size="sm"
               onClick={() => {
                 onFocusChange(true);
                 toast("已进入阅读模式，按 Esc 或 F 退出");
@@ -604,7 +854,7 @@ export function ReaderView({
           </div>
         </header>
       )}
-      {focusMode && (
+      {focusMode && !phoneMode && (
         <Button
           className="reader-focus-exit"
           size="sm"
@@ -615,249 +865,220 @@ export function ReaderView({
           退出阅读模式 <span>Esc</span>
         </Button>
       )}
-      <div className="reader-shell">
-        {!focusMode && (
-          <aside className="chapter-sidebar">
-            <Tabs
-              value={sideTab}
-              onValueChange={(value) => {
-                setSideTab(value);
-                if (value !== "clips") setActiveClip(null);
-                if (value === "history") {
-                  void persistCurrent()
-                    .then(() => listReadingHistory(book.id))
-                    .then(setHistory)
-                    .catch((error) => setError(errorText(error)));
-                }
-              }}
-              className="reader-side-tabs"
-            >
-              <TabsList
-                variant="line"
-                aria-label="阅读侧栏"
-                className="reader-side-tablist"
-              >
-                <TabsTrigger value="chapters">目录</TabsTrigger>
-                <TabsTrigger value="history">记录</TabsTrigger>
-                <TabsTrigger value="clips">
-                  灵感集{clips.length ? ` ${clips.length}` : ""}
-                </TabsTrigger>
-              </TabsList>
-              <TabsContent value="chapters" className="reader-side-panel">
-                <InputGroup className="chapter-search">
-                  <InputGroupAddon>
-                    <Search />
-                  </InputGroupAddon>
-                  <InputGroupInput
-                    aria-label="搜索章节"
-                    value={query}
-                    onChange={(event) => setQuery(event.target.value)}
-                    placeholder="搜索章节…"
-                  />
-                </InputGroup>
-                <div className="chapter-count">
-                  {visible.length} 章 · 选择章节继续阅读
+      {phoneMode && (
+        <header className="reader-phone-toolbar">
+          <div>
+            <Smartphone size={16} />
+            <span>手机模式</span>
+            <small>窄屏阅读 · 位置自动保存</small>
+          </div>
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => changePhoneMode(false)}
+          >
+            <Monitor data-icon="inline-start" />
+            退出手机模式<span className="reader-phone-shortcut">Esc</span>
+          </Button>
+        </header>
+      )}
+      <div
+        className={cn(
+          phoneMode && "reader-phone-stage",
+          !phoneMode && "reader-stage",
+        )}
+      >
+        <div className="reader-shell">
+          {phoneMode && (
+            <header className="reader-phone-header">
+              <div className="reader-phone-speaker" aria-hidden="true">
+                <i />
+                <i />
+              </div>
+              <div className="reader-phone-heading">
+                <span title={book.title}>{book.title}</span>
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  aria-label="朗读"
+                  disabled={!chapter}
+                  onClick={() => setSpeechOpen(true)}
+                >
+                  <Volume2 />
+                </Button>
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  aria-label="阅读设置"
+                  onClick={() => setSettingsOpen(true)}
+                >
+                  <Settings2 />
+                </Button>
+              </div>
+            </header>
+          )}
+          {!focusMode && !phoneMode && navigation}
+          <article
+            className="reader-content"
+            ref={contentRef}
+            tabIndex={-1}
+            onScroll={onScroll}
+          >
+            {busy && !chapter ? (
+              <div className="reader-loading">
+                <LoaderCircle className="spin" />
+                读取章节…
+              </div>
+            ) : chapter ? (
+              <div className="reader-paper">
+                <div className="chapter-heading">
+                  <span>
+                    {String(chapter.position + 1).padStart(3, "0")} /{" "}
+                    {chapters.length}
+                  </span>
+                  <h2>{chapter.title}</h2>
+                  <small>
+                    {formatExactWords(chapter.characterCount)} · 本章已读{" "}
+                    {Math.round(ratio * 100)}%
+                  </small>
                 </div>
-                <div className="chapter-list">
-                  {!visible.length && !busy && (
-                    <p className="list-empty">没有匹配的章节</p>
-                  )}
-                  {visible.map((item) => (
+                <div
+                  className="chapter-prose"
+                  ref={proseRef}
+                  tabIndex={0}
+                  aria-label="章节正文，划选文字后可收藏片段"
+                  onMouseUp={captureSelection}
+                  onKeyUp={captureSelection}
+                >
+                  {paragraphs.map((line, index) => {
+                    const ranges = highlightRanges.filter(
+                      (range) => range.paragraph === index,
+                    );
+                    const parts: ReactNode[] = [];
+                    let cursor = 0;
+                    for (const range of ranges) {
+                      parts.push(line.slice(cursor, range.start));
+                      parts.push(
+                        <mark
+                          className="reader-active-clip"
+                          key={`${range.start}-${range.end}`}
+                        >
+                          {line.slice(range.start, range.end)}
+                        </mark>,
+                      );
+                      cursor = range.end;
+                    }
+                    parts.push(line.slice(cursor));
+                    return (
+                      <p
+                        key={index}
+                        data-paragraph={index}
+                        className={
+                          speech.paragraph === index
+                            ? "reader-speaking"
+                            : undefined
+                        }
+                      >
+                        {parts}
+                      </p>
+                    );
+                  })}
+                </div>
+                {!phoneMode && (
+                  <footer className="reader-pagination">
                     <Button
-                      variant={
-                        chapter?.position === item.position
-                          ? "secondary"
-                          : "ghost"
+                      variant="outline"
+                      disabled={busy || currentIndex <= 0}
+                      onClick={() =>
+                        void openChapter(chapters[currentIndex - 1].position)
                       }
-                      disabled={busy}
-                      aria-current={
-                        chapter?.position === item.position ? "page" : undefined
-                      }
-                      key={item.position}
-                      onClick={() => void openChapter(item.position)}
                     >
-                      <span>{String(item.position + 1).padStart(3, "0")}</span>
-                      <div>
-                        <b>{item.title}</b>
-                        <small>{formatExactWords(item.characterCount)}</small>
-                      </div>
+                      <ChevronLeft />
+                      上一章
                     </Button>
-                  ))}
-                </div>
-              </TabsContent>
-              <TabsContent
-                value="history"
-                className="reader-side-panel reader-side-scroll"
-              >
-                <div className="reader-side-hint">
-                  <History size={15} /> 最近读过的章节与位置
-                </div>
-                {!history.length && (
-                  <p className="reader-side-empty">
-                    开始阅读后，这里会保存你的阅读记录。
-                  </p>
+                    <span>
+                      {currentIndex + 1} / {chapters.length}
+                    </span>
+                    <Button
+                      variant="outline"
+                      disabled={
+                        busy ||
+                        currentIndex < 0 ||
+                        currentIndex >= chapters.length - 1
+                      }
+                      onClick={() =>
+                        void openChapter(chapters[currentIndex + 1].position)
+                      }
+                    >
+                      下一章
+                      <ChevronRight />
+                    </Button>
+                  </footer>
                 )}
-                {history.map((item) => (
-                  <Button
-                    key={item.position}
-                    variant="ghost"
-                    className="reader-history-item"
-                    onClick={() => void openChapter(item.position, item.ratio)}
-                  >
-                    <span>{item.title}</span>
-                    <small>
-                      本章 {Math.round(item.ratio * 100)}% ·{" "}
-                      {new Date(item.updatedAt).toLocaleString("zh-CN")}
-                    </small>
-                  </Button>
-                ))}
-              </TabsContent>
-              <TabsContent
-                value="clips"
-                className="reader-side-panel reader-side-scroll"
+              </div>
+            ) : (
+              <div className="reader-loading">没有可阅读章节</div>
+            )}
+            {error && (
+              <Alert variant="destructive" className="reader-error">
+                <AlertCircle />
+                <AlertDescription>{error}</AlertDescription>
+              </Alert>
+            )}
+          </article>
+          {phoneMode && (
+            <footer className="reader-phone-footer">
+              <div
+                className="reader-phone-progress"
+                aria-label={`阅读进度：全书约 ${progress}%`}
               >
-                <div className="reader-side-hint">
-                  <LibraryBig size={15} /> 划选正文，收藏为写作素材
-                </div>
-                {activeClip && (
+                <span>
+                  {chapter
+                    ? `${currentIndex + 1} / ${chapters.length} 章`
+                    : "加载章节"}
+                </span>
+                {activeClip ? (
                   <Button
                     size="sm"
                     variant="ghost"
-                    className="reader-clear-clip"
                     onClick={() => setActiveClip(null)}
                   >
+                    <X data-icon="inline-start" />
                     退出片段定位
                   </Button>
+                ) : (
+                  <span>全书约 {progress}%</span>
                 )}
-                {!clips.length && (
-                  <p className="reader-side-empty">
-                    在正文中划选一段文字，即可收藏并添加备注。
-                  </p>
-                )}
-                {clips.map((clip) => (
-                  <div className="reader-clip" key={clip.id}>
-                    <button
-                      type="button"
-                      className="reader-clip-main"
-                      onClick={() => void jumpToClip(clip)}
-                    >
-                      <small>{clip.chapterTitle}</small>
-                      <span>“{clip.quote}”</span>
-                      {clip.note && <em>{clip.note}</em>}
-                    </button>
-                    <div className="reader-clip-actions">
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() =>
-                          openNote(
-                            {
-                              quote: clip.quote,
-                              paragraph: clip.paragraph,
-                              clipId: clip.id,
-                            },
-                            clip.note,
-                          )
-                        }
-                      >
-                        编辑备注
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="icon-sm"
-                        aria-label={`删除收藏：${clip.quote.slice(0, 12)}`}
-                        onClick={() => setDeleteTarget(clip)}
-                      >
-                        <Trash2 />
-                      </Button>
-                    </div>
-                  </div>
-                ))}
-              </TabsContent>
-            </Tabs>
-          </aside>
-        )}
-        <article
-          className="reader-content"
-          ref={contentRef}
-          onScroll={onScroll}
-        >
-          {busy && !chapter ? (
-            <div className="reader-loading">
-              <LoaderCircle className="spin" />
-              读取章节…
-            </div>
-          ) : chapter ? (
-            <div className="reader-paper">
-              <div className="chapter-heading">
-                <span>
-                  {String(chapter.position + 1).padStart(3, "0")} /{" "}
-                  {chapters.length}
-                </span>
-                <h2>{chapter.title}</h2>
-                <small>
-                  {formatExactWords(chapter.characterCount)} · 本章已读{" "}
-                  {Math.round(ratio * 100)}%
-                </small>
+                <div className="reader-progress-track">
+                  <i style={{ width: `${progress}%` }} />
+                </div>
               </div>
-              <div
-                className="chapter-prose"
-                ref={proseRef}
-                tabIndex={0}
-                aria-label="章节正文，划选文字后可收藏片段"
-                onMouseUp={captureSelection}
-                onKeyUp={captureSelection}
+              <nav
+                className="reader-phone-navigation"
+                aria-label="手机阅读操作"
               >
-                {paragraphs.map((line, index) => {
-                  const ranges = highlightRanges.filter(
-                    (range) => range.paragraph === index,
-                  );
-                  const parts: ReactNode[] = [];
-                  let cursor = 0;
-                  for (const range of ranges) {
-                    parts.push(line.slice(cursor, range.start));
-                    parts.push(
-                      <mark
-                        className="reader-active-clip"
-                        key={`${range.start}-${range.end}`}
-                      >
-                        {line.slice(range.start, range.end)}
-                      </mark>,
-                    );
-                    cursor = range.end;
-                  }
-                  parts.push(line.slice(cursor));
-                  return (
-                    <p
-                      key={index}
-                      data-paragraph={index}
-                      className={
-                        speech.paragraph === index
-                          ? "reader-speaking"
-                          : undefined
-                      }
-                    >
-                      {parts}
-                    </p>
-                  );
-                })}
-              </div>
-              <footer className="reader-pagination">
                 <Button
-                  variant="outline"
+                  size="sm"
+                  variant="ghost"
                   disabled={busy || currentIndex <= 0}
                   onClick={() =>
                     void openChapter(chapters[currentIndex - 1].position)
                   }
                 >
-                  <ChevronLeft />
+                  <ChevronLeft data-icon="inline-start" />
                   上一章
                 </Button>
-                <span>
-                  {currentIndex + 1} / {chapters.length}
-                </span>
                 <Button
-                  variant="outline"
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => setNavigationOpen(true)}
+                >
+                  <List data-icon="inline-start" />
+                  目录
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
                   disabled={
                     busy ||
                     currentIndex < 0 ||
@@ -868,32 +1089,49 @@ export function ReaderView({
                   }
                 >
                   下一章
-                  <ChevronRight />
+                  <ChevronRight data-icon="inline-end" />
                 </Button>
-              </footer>
-            </div>
-          ) : (
-            <div className="reader-loading">没有可阅读章节</div>
+              </nav>
+              <div className="reader-phone-home" aria-hidden="true" />
+            </footer>
           )}
-          {error && (
-            <Alert variant="destructive" className="reader-error">
-              <AlertCircle />
-              <AlertDescription>{error}</AlertDescription>
-            </Alert>
-          )}
-        </article>
-      </div>
-      <div className="reader-status">
-        <span>
-          {chapter
-            ? `${chapter.title} · 全书约 ${progress}%`
-            : "阅读位置会自动保存"}
-        </span>
-        <span>{focusMode ? "F / Esc 退出阅读模式" : "阅读位置已自动保存"}</span>
-        <div className="reader-progress-track">
-          <i style={{ width: `${progress}%` }} />
         </div>
       </div>
+      {!phoneMode && (
+        <div className="reader-status">
+          <span>
+            {chapter
+              ? `${chapter.title} · 全书约 ${progress}%`
+              : "阅读位置会自动保存"}
+          </span>
+          <span>
+            {focusMode ? "F / Esc 退出阅读模式" : "阅读位置已自动保存"}
+          </span>
+          <div className="reader-progress-track">
+            <i style={{ width: `${progress}%` }} />
+          </div>
+        </div>
+      )}
+      <Dialog
+        open={navigationOpen && phoneMode}
+        onOpenChange={setNavigationOpen}
+      >
+        <DialogContent
+          className="reader-navigation-dialog sm:max-w-md"
+          onCloseAutoFocus={(event) => {
+            event.preventDefault();
+            contentRef.current?.focus({ preventScroll: true });
+          }}
+        >
+          <DialogHeader>
+            <DialogTitle>阅读导航</DialogTitle>
+            <DialogDescription>
+              {book.title} · 目录、阅读记录与片段灵感集
+            </DialogDescription>
+          </DialogHeader>
+          {navigation}
+        </DialogContent>
+      </Dialog>
       {speech.playing && (
         <div className="reader-speech-bar" role="status">
           <Volume2 size={15} />
@@ -1220,28 +1458,32 @@ export function ReaderView({
                 </Button>
               </div>
             </div>
-            <div className="reader-setting-row">
-              <label>页宽</label>
-              <div>
-                {[
-                  { label: "收窄", value: 640 },
-                  { label: "标准", value: 740 },
-                  { label: "加宽", value: 860 },
-                ].map((option) => (
-                  <Button
-                    key={option.value}
-                    size="sm"
-                    variant={
-                      prefs.columnWidth === option.value ? "secondary" : "ghost"
-                    }
-                    aria-pressed={prefs.columnWidth === option.value}
-                    onClick={() => changePrefs({ columnWidth: option.value })}
-                  >
-                    {option.label}
-                  </Button>
-                ))}
+            {!phoneMode && (
+              <div className="reader-setting-row">
+                <label>页宽</label>
+                <div>
+                  {[
+                    { label: "收窄", value: 640 },
+                    { label: "标准", value: 740 },
+                    { label: "加宽", value: 860 },
+                  ].map((option) => (
+                    <Button
+                      key={option.value}
+                      size="sm"
+                      variant={
+                        prefs.columnWidth === option.value
+                          ? "secondary"
+                          : "ghost"
+                      }
+                      aria-pressed={prefs.columnWidth === option.value}
+                      onClick={() => changePrefs({ columnWidth: option.value })}
+                    >
+                      {option.label}
+                    </Button>
+                  ))}
+                </div>
               </div>
-            </div>
+            )}
           </div>
           <DialogFooter>
             <Button
