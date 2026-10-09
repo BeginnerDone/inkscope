@@ -41,6 +41,7 @@ import {
 import { toast } from "sonner";
 import { HomeView } from "./HomeView";
 import { IdeasView } from "./IdeasView";
+import { CreationView, type CreationSeed } from "./CreationView";
 import { ImportView } from "./ImportView";
 import { ReaderView } from "./ReaderView";
 import { SearchModal } from "./SearchModal";
@@ -60,7 +61,7 @@ import type {
   TeachingSection,
 } from "./types";
 
-type View = "home" | "import" | "reader" | "analyzing" | "report";
+type View = "home" | "import" | "reader" | "analyzing" | "report" | "creation";
 type ReportTab =
   | "overview"
   | "outline"
@@ -195,6 +196,14 @@ function normalizeReport(input: AnalysisReport): AnalysisReport {
 
 function App() {
   const [view, setView] = useState<View>("home");
+  const [creationSeed, setCreationSeed] = useState<CreationSeed | null>(null);
+  const [creationFocus, setCreationFocus] = useState(false);
+  const [creationMounted, setCreationMounted] = useState(false);
+  const openCreation = (seed: CreationSeed | null = null) => {
+    setCreationSeed(seed);
+    setCreationMounted(true);
+    setView("creation");
+  };
   const [readingMode, setReadingMode] = useState(false);
   const [phoneMode, setPhoneMode] = useState(false);
   const [books, setBooks] = useState<BookSummary[]>([]);
@@ -321,58 +330,63 @@ function App() {
       <SidebarProvider
         style={{ "--sidebar-width": "13.5rem" } as CSSProperties}
       >
-        {!(view === "reader" && (readingMode || phoneMode)) && (
-          <AppSidebar
-            view={view}
-            books={books}
-            selected={selected}
-            onHome={() => setView("home")}
-            onNew={newBook}
-            onOpen={readBook}
-            onSettings={() => setSettingsOpen(true)}
-            onSearch={() => setSearchOpen(true)}
-          />
-        )}
-        <SidebarInset
-          className={`main${view === "reader" && (readingMode || phoneMode) ? " main--reader-focus" : ""}`}
-        >
-          {!(view === "reader" && (readingMode || phoneMode)) && (
-            <header className="topbar">
-              <div className="topbar-leading">
-                <SidebarTrigger aria-label="展开或收起导航" />
-                <Separator orientation="vertical" className="h-4" />
-                <div className="crumb">
-                  <span>工作空间</span>
-                  <ChevronRight size={14} />
-                  <b>
-                    {view === "home"
-                      ? "我的书架"
-                      : view === "import"
-                        ? "添加书籍"
-                        : view === "reader"
-                          ? "阅读"
-                          : view === "analyzing"
-                            ? "分析进度"
-                            : "拆书报告"}
-                  </b>
-                </div>
-              </div>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => setSettingsOpen(true)}
-              >
-                <span
-                  className={
-                    config.apiKey ? "status-dot completed" : "status-dot"
-                  }
-                />
-                {config.apiKey
-                  ? config.model.replace("deepseek-", "")
-                  : "配置模型"}
-              </Button>
-            </header>
+        {!(view === "reader" && (readingMode || phoneMode)) &&
+          !(view === "creation" && creationFocus) && (
+            <AppSidebar
+              view={view}
+              books={books}
+              selected={selected}
+              onHome={() => setView("home")}
+              onNew={newBook}
+              onCreation={() => openCreation()}
+              onOpen={readBook}
+              onSettings={() => setSettingsOpen(true)}
+              onSearch={() => setSearchOpen(true)}
+            />
           )}
+        <SidebarInset
+          className={`main${(view === "reader" && (readingMode || phoneMode)) || (view === "creation" && creationFocus) ? " main--reader-focus" : ""}`}
+        >
+          {!(view === "reader" && (readingMode || phoneMode)) &&
+            !(view === "creation" && creationFocus) && (
+              <header className="topbar">
+                <div className="topbar-leading">
+                  <SidebarTrigger aria-label="展开或收起导航" />
+                  <Separator orientation="vertical" className="h-4" />
+                  <div className="crumb">
+                    <span>工作空间</span>
+                    <ChevronRight size={14} />
+                    <b>
+                      {view === "home"
+                        ? "我的书架"
+                        : view === "import"
+                          ? "添加书籍"
+                          : view === "reader"
+                            ? "阅读"
+                            : view === "creation"
+                              ? "创作空间"
+                              : view === "analyzing"
+                                ? "分析进度"
+                                : "拆书报告"}
+                    </b>
+                  </div>
+                </div>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setSettingsOpen(true)}
+                >
+                  <span
+                    className={
+                      config.apiKey ? "status-dot completed" : "status-dot"
+                    }
+                  />
+                  {config.apiKey
+                    ? config.model.replace("deepseek-", "")
+                    : "配置模型"}
+                </Button>
+              </header>
+            )}
           {!isTauri() && (
             <Alert className="runtime-banner">
               <AlertCircle />
@@ -397,6 +411,18 @@ function App() {
                 </Button>
               </AlertDescription>
             </Alert>
+          )}
+          {creationMounted && (
+            <div hidden={view !== "creation"}>
+              <CreationView
+                books={books}
+                config={config}
+                onSettings={() => setSettingsOpen(true)}
+                seed={creationSeed}
+                onSeedConsumed={() => setCreationSeed(null)}
+                onFocusChange={setCreationFocus}
+              />
+            </div>
           )}
           {view === "home" && (
             <HomeView
@@ -450,6 +476,7 @@ function App() {
               key={selected.id}
               book={selected}
               onNew={newBook}
+              onCreation={openCreation}
               onReanalyze={() => void runBook(selected)}
             />
           )}
@@ -591,10 +618,12 @@ function ReportView({
   book,
   onNew,
   onReanalyze,
+  onCreation,
 }: {
   book: BookSummary;
   onNew: () => void;
   onReanalyze: () => void;
+  onCreation: (seed: CreationSeed) => void;
 }) {
   const report = normalizeReport(book.report as AnalysisReport);
   const [tab, setTab] = useState<ReportTab>("overview");
@@ -693,7 +722,7 @@ function ReportView({
           <LessonsView report={report} />
         </TabsContent>
         <TabsContent value="ideas">
-          <IdeasView report={report} />
+          <IdeasView report={report} onCreation={onCreation} />
         </TabsContent>
       </Tabs>
     </div>

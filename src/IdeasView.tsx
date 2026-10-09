@@ -1,9 +1,17 @@
+import { Button } from "@/components/ui/button";
+import type { CreationSeed } from "./CreationView";
 import { Empty, EmptyDescription, EmptyHeader } from "@/components/ui/empty";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { useState } from "react";
 import type { AnalysisReport, Idea } from "./types";
 
-export function IdeasView({ report }: { report: AnalysisReport }) {
+export function IdeasView({
+  report,
+  onCreation,
+}: {
+  report: AnalysisReport;
+  onCreation: (seed: CreationSeed) => void;
+}) {
   const [platform, setPlatform] = useState("全部");
   const ideas = report.ideas || [];
   const current = report.ideasVersion === 2;
@@ -60,6 +68,7 @@ export function IdeasView({ report }: { report: AnalysisReport }) {
         <IdeaCard
           key={`${idea.platform}-${idea.title}-${index}`}
           idea={idea}
+          onCreation={onCreation}
           index={index}
         />
       ))}
@@ -67,7 +76,15 @@ export function IdeasView({ report }: { report: AnalysisReport }) {
   );
 }
 
-function IdeaCard({ idea, index }: { idea: Idea; index: number }) {
+function IdeaCard({
+  idea,
+  index,
+  onCreation,
+}: {
+  idea: Idea;
+  index: number;
+  onCreation: (seed: CreationSeed) => void;
+}) {
   return (
     <article className="idea-proposal">
       <header>
@@ -77,6 +94,20 @@ function IdeaCard({ idea, index }: { idea: Idea; index: number }) {
           {idea.genre && `· ${idea.genre}`}
         </span>
         <h3>{idea.title}</h3>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() =>
+            onCreation({
+              title: idea.title,
+              genre: idea.genre || "",
+              audience: idea.audience || "",
+              seed: `故事构思：${idea.premise}\n核心卖点：${idea.sellingPoint || ""}\n持续连载：${idea.storyEngine || ""}\n开篇规划：${JSON.stringify(idea.opening || [])}\n原创差异：${idea.difference || ""}`,
+            })
+          }
+        >
+          以此创建作品
+        </Button>
         {idea.sellingPoint && (
           <p className="idea-selling-point">{idea.sellingPoint}</p>
         )}

@@ -13,7 +13,7 @@ import {
   useSidebar,
 } from "@/components/ui/sidebar";
 import type { BookSummary } from "@/types";
-import { BookOpen, Home, Plus, Search, Settings } from "lucide-react";
+import { BookOpen, Home, Plus, Search, Settings, PenLine } from "lucide-react";
 
 export function AppSidebar({
   view,
@@ -21,6 +21,7 @@ export function AppSidebar({
   selected,
   onHome,
   onNew,
+  onCreation,
   onOpen,
   onSettings,
   onSearch,
@@ -30,6 +31,7 @@ export function AppSidebar({
   selected: BookSummary | null;
   onHome: () => void;
   onNew: () => void;
+  onCreation: () => void;
   onOpen: (book: BookSummary) => void;
   onSettings: () => void;
   onSearch: () => void;
@@ -48,7 +50,7 @@ export function AppSidebar({
           </div>
           <div>
             <strong>InkScope</strong>
-            <small>阅读与灵感</small>
+            <small>阅读、灵感与创作</small>
           </div>
         </div>
         <SidebarMenu>
@@ -86,6 +88,15 @@ export function AppSidebar({
                   <span>添加书籍</span>
                 </SidebarMenuButton>
               </SidebarMenuItem>
+              <SidebarMenuItem>
+                <SidebarMenuButton
+                  isActive={view === "creation"}
+                  onClick={() => navigate(onCreation)}
+                >
+                  <PenLine />
+                  <span>创作空间</span>
+                </SidebarMenuButton>
+              </SidebarMenuItem>
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
@@ -99,6 +110,7 @@ export function AppSidebar({
                     isActive={
                       view !== "home" &&
                       view !== "import" &&
+                      view !== "creation" &&
                       selected?.id === book.id
                     }
                     onClick={() => navigate(() => onOpen(book))}

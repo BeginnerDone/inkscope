@@ -57,7 +57,9 @@ export function SettingsModal({
       const success = await testModel(form);
       setStatus({
         success,
-        message: success ? "连接成功，可以开始分析。" : "模型未返回预期结果。",
+        message: success
+          ? "连接成功，可以开始分析与创作。"
+          : "模型未返回预期结果。",
       });
     } catch (e) {
       setStatus({
@@ -79,7 +81,7 @@ export function SettingsModal({
         <DialogHeader>
           <DialogTitle>模型与设置</DialogTitle>
           <DialogDescription>
-            连接 DeepSeek，开始分析书籍与生成原创灵感。
+            连接 DeepSeek，用于书籍分析、原创策划与章节协作。
           </DialogDescription>
         </DialogHeader>
         <FieldGroup>

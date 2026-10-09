@@ -12,6 +12,7 @@ mod legado;
 mod ideas;
 mod reading;
 mod completeness;
+mod creation;
 mod reader_data;
 mod speech;
 
@@ -1039,6 +1040,7 @@ pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
             recover_interrupted_jobs(app.handle()).map_err(std::io::Error::other)?;
+            creation::recover(app.handle()).map_err(std::io::Error::other)?;
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -1067,7 +1069,23 @@ pub fn run() {
             reader_data::save_reading_clip,
             reader_data::update_reading_clip,
             reader_data::delete_reading_clip,
-            speech::fetch_speech_audio
+            speech::fetch_speech_audio,
+            creation::workflow::read_creation_chapter,
+            creation::workflow::creation_chapter_action,
+            creation::list_creations,
+            creation::get_creation,
+            creation::delete_creation,
+            creation::create_creation,
+            creation::save_creation,
+            creation::creation_skills,
+            creation::creation_versions,
+            creation::restore_creation_version,
+            creation::list_creation_tasks,
+            creation::generate_creation,
+            creation::accept_creation_task,
+            creation::dismiss_creation_task,
+            creation::export_creation,
+            creation::export_creation_draft
         ])
         .run(tauri::generate_context!())
         .expect("error while running InkScope");

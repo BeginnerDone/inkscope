@@ -677,7 +677,7 @@ test("settings use keyboard accessible shadcn Select and source failures are vis
   await page.getByRole("combobox", { name: "模型", exact: true }).click();
   await page.getByRole("option", { name: "DeepSeek V4 Pro" }).click();
   await page.getByRole("button", { name: "测试连接" }).click();
-  await expect(page.getByText("连接成功，可以开始分析。")).toBeVisible();
+  await expect(page.getByText("连接成功，可以开始分析与创作。")).toBeVisible();
   await page.evaluate(() => window.scrollTo(0, 0));
   await page.screenshot({ path: "test-results/settings.png" });
   await page.keyboard.press("Escape");
@@ -1430,3 +1430,38 @@ for (const phoneMode of [false, true]) {
     ).toBeVisible();
   });
 }
+
+test("report idea can seed a new original creation project", async ({
+  page,
+}) => {
+  await mockDesktop(page);
+  await page.goto("/");
+  await page.evaluate(() => {
+    const original = window.__TAURI__!.core.invoke;
+    window.__TAURI__!.core.invoke = async <T>(
+      command: string,
+      args?: Record<string, unknown>,
+    ): Promise<T> => {
+      if (command === "list_creations") return [] as T;
+      return original<T>(command, args);
+    };
+  });
+  await page
+    .getByRole("button", { name: "报告", exact: true })
+    .first()
+    .click();
+  await page.getByRole("tab", { name: /原创灵感/ }).click();
+  await page
+    .getByRole("button", { name: "以此创建作品", exact: true })
+    .first()
+    .click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog.getByLabel("作品名称", { exact: true })).toHaveValue(
+    "测试方案 1",
+  );
+  await expect(dialog.getByLabel("故事灵感")).toHaveValue(/记录越准确/);
+  await dialog.getByRole("button", { name: "取消", exact: true }).click();
+  await expect(
+    page.getByRole("heading", { name: "创作空间", exact: true }),
+  ).toBeVisible();
+});
