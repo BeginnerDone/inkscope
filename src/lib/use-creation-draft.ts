@@ -1,3 +1,4 @@
+import { readStorage, writeStorage } from "./storage";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { saveCreation, type CreationProject } from "./creation";
@@ -25,10 +26,10 @@ export function useProjectDraft(initial: CreationProject) {
   const backupTimer = useRef<number | null>(null);
   const backupNow = (p: CreationProject) => {
     try {
-      localStorage.setItem(
+      void writeStorage(
         `inkscope-creation-draft-${p.id}`,
         JSON.stringify(p),
-      );
+      ).catch(() => { if (mounted.current) setBackupError("SQLite 恢复草稿保存失败，请及时保存或导出正文。"); });
       if (mounted.current) setBackupError("");
     } catch {
       if (mounted.current)
@@ -103,11 +104,11 @@ export function useProjectDraft(initial: CreationProject) {
   useEffect(() => {
     mounted.current = true;
     try {
-      if (localStorage.getItem(`inkscope-creation-conflict-${initial.id}`))
+      if (readStorage(`inkscope-creation-conflict-${initial.id}`))
         setRecoveryError(
           "发现旧版未保存草稿，已单独保留。请导出恢复草稿再决定如何合并。",
         );
-      const raw = localStorage.getItem(`inkscope-creation-draft-${initial.id}`);
+      const raw = readStorage(`inkscope-creation-draft-${initial.id}`);
       if (raw) {
         const draft = JSON.parse(raw) as CreationProject;
         if (
@@ -120,10 +121,10 @@ export function useProjectDraft(initial: CreationProject) {
             setState("已恢复未保存草稿");
             toast.info("已恢复上次未保存的草稿");
           } else {
-            localStorage.setItem(
+            void writeStorage(
               `inkscope-creation-conflict-${initial.id}`,
               raw,
-            );
+            ).catch(() => { if (mounted.current) setRecoveryError("冲突草稿保存失败，请导出恢复草稿。"); });
             setRecoveryError(
               "发现旧版未保存草稿，已单独保留。请导出恢复草稿再决定如何合并。",
             );

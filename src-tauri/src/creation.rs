@@ -721,6 +721,7 @@ fn context(p: &Project, target: &Document, instruction: &str) -> (String, String
             if d.kind != "resource"
                 || d.id == target.id
                 || d.content.trim().is_empty()
+                || d.details.get("category").map(String::as_str) == Some("trash")
                 || d.details.get("status").map(String::as_str) == Some("已弃用")
             {
                 return false;

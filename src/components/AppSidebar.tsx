@@ -88,15 +88,7 @@ export function AppSidebar({
                   <span>添加书籍</span>
                 </SidebarMenuButton>
               </SidebarMenuItem>
-              <SidebarMenuItem>
-                <SidebarMenuButton
-                  isActive={view === "creation"}
-                  onClick={() => navigate(onCreation)}
-                >
-                  <PenLine />
-                  <span>创作空间</span>
-                </SidebarMenuButton>
-              </SidebarMenuItem>
+
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>

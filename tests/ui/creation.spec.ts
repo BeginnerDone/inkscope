@@ -122,6 +122,19 @@ async function creationDesktop(
     (window as any).__TAURI__ = {
       core: {
         invoke: async (command: string, args: any = {}) => {
+            const store = ((window as any).__SQLITE_TEST__ ||= {});
+            if(command === "writer_assist") {
+              (window as any).__WRITER_CALLS__ ||= []; (window as any).__WRITER_CALLS__.push(args);
+              if(args.action === "names")return {names:["林清川","林知远","林怀瑾","林景行","林砚舟","林望舒","林修竹","林云深","林时安","林星野"]};
+              if(args.action === "complete")return {text:"他终于推开了门。"};
+              if(args.action === "correct")return {corrections:[]};
+              if(args.action === "foreshadow")return {evidence:[{quote:"铜镜终于裂开了。",reason:"此前裂纹得到兑现"}]};
+              return {text:args.action === "polish"?"润色后的文字。":"章节审核建议。"};
+            }
+
+            if (command === "initialize_storage") { for (const [key,value] of Object.entries(args.legacy || {})) if (!(key in store)) store[key]=value; return {...store}; }
+            if (command === "write_storage") { if(args.value === null) delete store[args.key]; else store[args.key]=args.value; return; }
+
           calls.push({ command, args: copy(args) });
           if (command === "list_books")
             return [
@@ -536,13 +549,13 @@ test("creation deletion confirms scope, supports cancellation and clears local d
   await expect(dialog).toContainText("历史版本和 AI 记录");
   await dialog.getByRole("button", { name: "取消", exact: true }).click();
   await expect(page.getByRole("button", { name: /长夜记录员 都市悬疑/ })).toBeVisible();
-  await page.evaluate(() => { localStorage.setItem("inkscope-creation-draft-project-1", "draft"); localStorage.setItem("inkscope-creation-conflict-project-1", "conflict"); });
+  await page.evaluate(() => { (window as any).__SQLITE_TEST__["inkscope-creation-draft-project-1"] = "draft"; (window as any).__SQLITE_TEST__["inkscope-creation-conflict-project-1"] = "conflict"; });
   await page.getByRole("button", { name: "删除作品 长夜记录员", exact: true }).click();
   await dialog.getByRole("button", { name: "确认删除作品", exact: true }).click();
   await expect(page.getByText("开始写你的第一部作品", { exact: true })).toBeVisible();
-  expect(await page.evaluate(() => localStorage.getItem("inkscope-creation-draft-project-1"))).toBeNull();
-  expect(await page.evaluate(() => localStorage.getItem("inkscope-creation-conflict-project-1"))).toBeNull();
-  await page.getByRole("button", { name: "我的书架 1" }).click();
+  expect(await page.evaluate(() => (window as any).__SQLITE_TEST__["inkscope-creation-draft-project-1"] ?? null)).toBeNull();
+  expect(await page.evaluate(() => (window as any).__SQLITE_TEST__["inkscope-creation-conflict-project-1"] ?? null)).toBeNull();
+  await page.getByRole("button", { name: "阅读", exact: true }).click();
   await expect(page.getByRole("button", { name: "我的旧稿", exact: true }).last()).toBeVisible();
 });
 
@@ -571,4 +584,137 @@ test("blocked deletion keeps the project and dialog available", async ({ page })
   await expect(page.getByLabel("故事简案")).toBeVisible();
   await page.getByRole("button",{name:"进入章节写作",exact:true}).click();
   await expect(page.getByRole("tab",{name:"准备",exact:true})).toHaveAttribute("data-state","active");
+});
+
+test("legacy storage migrates before rendering and is not written again", async ({page}) => {
+  await creationDesktop(page, {recovered:true});
+  await openWorkspace(page);
+  expect(await page.evaluate(() => localStorage.getItem("inkscope-model"))).toBeNull();
+  expect(await page.evaluate(() => localStorage.getItem("inkscope-creation-draft-project-1"))).toBeNull();
+  await page.getByLabel("章节正文").fill("SQLite 中的新草稿");
+  await expect.poll(() => page.evaluate(() => JSON.parse((window as any).__SQLITE_TEST__["inkscope-creation-draft-project-1"]).documents[6].content)).toBe("SQLite 中的新草稿");
+  expect(await page.evaluate(() => localStorage.length)).toBe(0);
+});
+test("failed migration retains legacy data and supports retry", async ({page}) => {
+ await creationDesktop(page);
+ await page.addInitScript(() => {
+   const original = (window as any).__TAURI__.core.invoke;
+   let fail=true;
+   (window as any).__TAURI__.core.invoke=async (command:string,args:any) => {
+     if(command==="initialize_storage" && fail){fail=false;throw new Error("disk unavailable")}
+     return original(command,args);
+   };
+ });
+ await page.goto("/");
+ await expect(page.getByText("本地 SQLite 存储初始化失败，已有数据未删除。请重试。")).toBeVisible();
+ expect(await page.evaluate(() => localStorage.getItem("inkscope-model"))).not.toBeNull();
+ await page.getByRole("button",{name:"重试",exact:true}).click();
+ await expect(page.getByRole("button",{name:"创作空间",exact:true})).toBeVisible();
+ expect(await page.evaluate(() => localStorage.getItem("inkscope-model"))).toBeNull();
+});
+
+async function openWriter(page:Page) {
+ await page.goto('/'); await page.getByRole('button',{name:'写作',exact:true}).click();
+ await page.getByRole('button',{name:/长夜记录员 都市悬疑/}).click();
+ await expect(page.getByLabel('写作正文')).not.toHaveAttribute('readonly','');
+}
+async function selectWriter(page:Page,start:number,end:number) {
+ await page.getByLabel('写作正文').evaluate((el:HTMLTextAreaElement,[start,end])=>{el.focus();el.setSelectionRange(start,end);el.dispatchEvent(new MouseEvent('mouseup',{bubbles:true}));},[start,end]);
+ await expect(page.getByRole('button',{name:'标记伏笔',exact:true})).toBeVisible();
+}
+test('writer provides clean manual writing, chapter plans and recoverable deletion',async({page})=>{
+ await creationDesktop(page);await openWriter(page);
+ await expect(page.getByRole('tab',{name:'准备',exact:true})).toHaveCount(0);
+ await page.getByLabel('写作正文').fill('第一章的人工正文。');
+ await page.getByText('本章章纲',{exact:true}).click();await page.getByLabel('本章章纲').fill('人物作出选择。');
+ await page.getByRole('button',{name:'新建分卷',exact:true}).click();await page.getByRole('textbox',{name:'分卷名称',exact:true}).fill('第二卷');await page.getByRole('button',{name:'保存名称',exact:true}).click();
+ await page.getByRole('button',{name:'向第二卷新建章节',exact:true}).click();await page.getByLabel('章节标题').fill('新章节');await page.getByLabel('写作正文').fill('保留这段正文。');
+ await page.getByRole('button',{name:'删除章节新章节',exact:true}).click();await page.getByRole('button',{name:'确认删除',exact:true}).click();
+ await page.getByRole('button',{name:'工具',exact:true}).click();await page.getByRole('tab',{name:/回收站 ·/}).click();
+ await page.getByRole('button',{name:'恢复',exact:true}).click();await page.getByRole('button',{name:'关闭',exact:true}).click();await page.locator('.writer-chapter-link').getByText('新章节',{exact:true}).click();await expect(page.getByLabel('写作正文')).toHaveValue('保留这段正文。');
+ await page.screenshot({animations:'disabled',path:'test-results/writer-workspace.png'});
+});
+test('foreshadow links preserve quote positions, status and deleted source recovery',async({page})=>{
+ await creationDesktop(page);await openWriter(page);const text='铜镜上出现一道裂纹。\n铜镜终于裂开了。';
+ await page.getByLabel('写作正文').fill(text);await selectWriter(page,0,11);
+ await page.getByRole('button',{name:'标记伏笔',exact:true}).click();await page.getByLabel('伏笔名称',{exact:true}).fill('铜镜裂纹');await page.getByRole('button',{name:'保存伏笔',exact:true}).click();await expect(page.getByRole('dialog',{name:'伏笔集合'})).toBeVisible();
+ await expect(page.getByRole('dialog',{name:'伏笔集合'}).getByLabel('伏笔名称',{exact:true})).toHaveValue('铜镜裂纹');
+ await page.getByRole('button',{name:'关闭',exact:true}).click();await selectWriter(page,12,text.length);await page.getByRole('button',{name:'关联回收位置',exact:true}).click();await page.getByRole('button',{name:/^伏笔 /}).click();
+ await page.getByRole('combobox',{name:'回收状态'}).click();await page.getByRole('option',{name:'已回收',exact:true}).click();
+ await page.getByRole('button',{name:'返回埋设位置',exact:true}).click();await expect.poll(()=>page.getByLabel('写作正文').evaluate((e:HTMLTextAreaElement)=>e.value.slice(e.selectionStart,e.selectionEnd))).toBe(text.slice(0,11));
+ await page.getByRole('button',{name:/^伏笔 /}).click();await page.screenshot({animations:'disabled',path:'test-results/writer-foreshadow.png'});await page.getByRole('button',{name:'关闭',exact:true}).click();
+ await page.getByRole('button',{name:'删除章节第1章',exact:true}).click();await page.getByRole('button',{name:'确认删除',exact:true}).click();
+ await page.getByRole('button',{name:/^伏笔 /}).click();await page.getByRole('button',{name:'返回埋设位置',exact:true}).click();await expect(page.getByRole('alert')).toContainText('关联章节已删除，可先从回收站恢复。');
+});
+test('writer AI names, completion and review remain optional',async({page})=>{
+ await creationDesktop(page);await openWriter(page);await page.getByRole('button',{name:'工具',exact:true}).click();await page.getByRole('tab',{name:'人物取名',exact:true}).click();
+ await page.getByLabel('指定姓氏').fill('林');await page.getByRole('button',{name:'生成十个名字',exact:true}).click();await expect(page.getByRole('button',{name:'存为人物',exact:true})).toHaveCount(10);
+ await page.getByRole('button',{name:'存为人物',exact:true}).first().click();await page.getByRole('button',{name:'关闭',exact:true}).click();
+ await page.getByRole('button',{name:'写作辅助',exact:true}).click();await page.getByRole('checkbox',{name:/FIM 补全/}).check();await page.getByRole('button',{name:'完成',exact:true}).click();
+ await page.getByLabel('写作正文').fill('夜色降临，');await expect(page.locator('.writer-completion')).toContainText('他终于推开了门。');await page.getByRole('button',{name:'Tab 接受',exact:true}).click();await expect(page.getByLabel('写作正文')).toHaveValue('夜色降临，他终于推开了门。');
+ await page.getByRole('button',{name:'工具',exact:true}).click();await page.getByRole('tab',{name:'章节审核',exact:true}).click();await page.getByRole('button',{name:'审核所选章节',exact:true}).click();await expect(page.getByRole('dialog',{name:'章节审核',exact:true})).toContainText('章节审核建议。');
+});
+
+test('writer archive restores chapters and canonical notes without overwriting new content',async()=>{
+ const {archive,restore,updateAnchors}=await import('../../src/lib/writer');
+ const p:any={id:'p',volumes:[{id:'v',title:'第一卷'}],documents:[{id:'c',kind:'chapter',title:'第一章',content:'正文',goal:'目标',volumeId:'v',details:{}},{id:'r',kind:'rules',title:'世界规则',content:'原设定',goal:'',volumeId:'',details:{}}]};
+ const removed=archive(p,['c']);expect(removed.documents[0].details.category).toBe('trash');expect(restore(removed,'c').documents[0]).toMatchObject({kind:'chapter',content:'正文',volumeId:'v'});
+ const cleared=archive(p,['r']);expect(cleared.documents.find(d=>d.id==='r')!.content).toBe('');const snapshot=cleared.documents.find(d=>d.details?.originalKind==='canonical')!;
+ expect(restore(cleared,snapshot.id).documents.find(d=>d.id==='r')!.content).toBe('原设定');cleared.documents.find(d=>d.id==='r')!.content='新的设定';expect(()=>restore(cleared,snapshot.id)).toThrow(/避免覆盖/);
+ const mark:any={id:'m',kind:'resource',details:{category:'foreshadow',chapterId:'c',quote:'铜镜',start:'0'}};
+ expect(updateAnchors([mark],'c','前言铜镜')[0].details?.start).toBe('2');expect(updateAnchors([mark],'c','前言铜镜和铜镜')[0].details?.anchorState).toBe('需重新定位');expect(updateAnchors([mark],'c','原文已删')[0].details?.anchorState).toBe('需重新定位');
+});
+
+test('writer volume deletion can preserve chapters and restores the removed volume',async({page})=>{
+ await creationDesktop(page);await openWriter(page);
+ await page.getByRole('button',{name:'删除分卷第一卷',exact:true}).click();
+ await page.getByRole('button',{name:'确认删除',exact:true}).click();await expect(page.getByRole('dialog')).toHaveCount(0);
+ await expect(page.locator('.writer-volume')).toContainText('未分卷');await expect(page.getByLabel('写作正文')).toHaveValue('这是作者的旧正文。');
+ await page.getByRole('button',{name:'工具',exact:true}).click();await page.getByRole('tab',{name:/回收站 ·/}).click();await page.getByRole('button',{name:'恢复',exact:true}).click();
+ await page.getByRole('button',{name:'关闭',exact:true}).click();await expect(page.locator('.writer-volume').filter({hasText:'第一卷'})).toBeVisible();
+ await page.setViewportSize({width:980,height:680});expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
+ await page.getByRole('button',{name:'专注写作',exact:true}).click();await expect(page.getByRole('navigation',{name:'写作目录'})).toHaveCount(0);await page.keyboard.press('Escape');await expect(page.getByRole('navigation',{name:'写作目录'})).toBeVisible();
+});
+
+test('writer separates manuscript from material pages and edits one setting at a time', async({page})=>{
+ await creationDesktop(page); await openWriter(page);
+ await page.getByLabel('写作正文').fill('长夜里的第一段正文。');
+ const directory = await page.getByRole('navigation',{name:'写作目录'}).boundingBox();
+ const manuscript = await page.getByLabel('写作正文').boundingBox();
+ expect(manuscript!.x).toBeGreaterThan(directory!.x + directory!.width);
+ expect(manuscript!.y + manuscript!.height).toBeLessThanOrEqual(820);
+ expect(manuscript!.height).toBeGreaterThan(200);
+ await page.getByRole('button',{name:'设定',exact:true}).click();
+ await expect(page.getByRole('dialog',{name:'设定背景'})).toBeVisible();
+ await expect(page.locator('.writer-material-index')).toBeVisible();
+ await expect(page.locator('.writer-panel-content textarea')).toHaveCount(1);
+ await page.getByRole('button',{name:'新增条目',exact:true}).click();
+ await page.locator('.writer-panel-content textarea').fill('只有月圆时才能使用这条规则。');
+ await page.screenshot({animations:'disabled',path:'test-results/writer-materials.png'});
+ await page.getByRole('button',{name:'关闭',exact:true}).click();
+ await expect(page.getByLabel('写作正文')).toHaveValue('长夜里的第一段正文。');
+ await page.setViewportSize({width:980,height:760});
+ await page.screenshot({animations:'disabled',path:'test-results/writer-980.png'});
+ await expect.poll(()=>page.evaluate(()=>document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+});
+
+test('writer respects reduced motion and keeps navigation beside the manuscript',async({page})=>{
+ await page.emulateMedia({reducedMotion:'reduce'}); await creationDesktop(page); await openWriter(page);
+ await expect(page.getByRole('navigation',{name:'写作目录'}).getByRole('button',{name:'设定',exact:true})).toHaveCount(0);
+ await page.getByRole('button',{name:'设定',exact:true}).click();
+ await expect(page.getByRole('dialog',{name:'设定背景'})).toBeVisible();
+ await page.getByRole('button',{name:'关闭',exact:true}).click();await page.getByLabel('写作正文').fill('夜色落在窗沿。');
+ await expect(page.locator('.writer-manuscript-label')).toContainText('7 字');
+});
+
+test('writer volume descriptions persist and tools show one dedicated function', async({page})=>{
+ await creationDesktop(page);await openWriter(page);
+ await page.getByRole('button',{name:'第一卷',exact:true}).click();
+ await page.getByLabel('卷描述',{exact:true}).fill('进入失落的旧城。');await page.getByLabel('本卷目标',{exact:true}).fill('找出铜镜的主人。');
+ await page.getByRole('button',{name:'保存名称',exact:true}).click();await expect(page.locator('.writer-volume-goal')).toContainText('找出铜镜的主人。');
+ await page.getByRole('button',{name:'第一卷',exact:true}).click();await expect(page.getByLabel('卷描述',{exact:true})).toHaveValue('进入失落的旧城。');await page.getByRole('button',{name:'关闭',exact:true}).click();
+ await page.getByRole('button',{name:'工具',exact:true}).click();await expect(page.getByLabel('指定姓氏')).toBeVisible();
+ await page.getByRole('tab',{name:'章节审核',exact:true}).click();await expect(page.getByLabel('指定姓氏')).toHaveCount(0);await expect(page.getByRole('button',{name:'审核所选章节'})).toBeVisible();
+ await page.getByRole('tab',{name:'文字润色',exact:true}).click();await expect(page.getByRole('button',{name:'审核所选章节'})).toHaveCount(0);await expect(page.getByRole('button',{name:'润色当前章'})).toBeVisible();
+ await page.getByRole('button',{name:'关闭',exact:true}).click();await page.getByRole('button',{name:'工具',exact:true}).click();await page.getByLabel('指定姓氏').fill('林');await page.getByRole('button',{name:'生成十个名字'}).click();await expect(page.getByRole('button',{name:'复制',exact:true})).toHaveCount(10);await page.screenshot({animations:'disabled',path:'test-results/writer-names.png'});
 });

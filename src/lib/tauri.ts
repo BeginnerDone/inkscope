@@ -44,7 +44,7 @@ export const fetchSpeechAudio = (template: string, text: string) =>
     text,
   });
 
-function invoke<T>(
+export function invoke<T>(
   command: string,
   args?: Record<string, unknown>,
 ): Promise<T> {

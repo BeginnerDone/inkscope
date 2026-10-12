@@ -1,3 +1,5 @@
+import { WriterWorkbench } from "./WriterWorkbench";
+import { readStorage, writeStorage } from "./lib/storage";
 import { CreationWorkbench } from "./CreationWorkbench";
 
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -43,7 +45,9 @@ export function CreationView({
   seed,
   onSeedConsumed,
   onFocusChange,
+  mode = "ai",
 }: {
+  mode?: "ai" | "writer";
   books: BookSummary[];
   config: ModelConfig;
   onSettings: () => void;
@@ -66,7 +70,7 @@ export function CreationView({
     try {
       await deleteCreation(deleteTarget.id, deleteTarget.revision);
       for (const key of ["draft", "conflict"]) {
-        try { localStorage.removeItem(`inkscope-creation-${key}-${deleteTarget.id}`); } catch { /* Database deletion remains authoritative. */ }
+        try { await writeStorage(`inkscope-creation-${key}-${deleteTarget.id}`, null); } catch { /* Database deletion remains authoritative. */ }
       }
       setProjects((items) => items.filter((p) => p.id !== deleteTarget.id));
       setDeleteTarget(null); toast.success("作品及关联记录已删除");
@@ -100,6 +104,7 @@ export function CreationView({
   const visible = projects.filter((p) =>
     `${p.title} ${p.genre}`.includes(query.trim()),
   );
+  if (project && mode === "writer") return <WriterWorkbench key={project.id} initial={project} config={config} onFocusChange={onFocusChange} onBack={() => { setProject(null); onFocusChange(false); void refresh(); }} />;
   if (project)
     return (
       <>
@@ -137,7 +142,7 @@ export function CreationView({
     <div className="page creation-list">
       <header className="page-heading">
         <div>
-          <h1>创作空间</h1>
+          <h1>{mode === "writer" ? "写作空间" : "AI 创作空间"}</h1>
           <p>从一个想法开始，把故事写成自己的长篇。</p>
         </div>
         <Button onClick={() => setCreating(true)}>
@@ -222,13 +227,13 @@ export function CreationView({
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-      <div className="creation-intro">
+      {mode === "ai" && <div className="creation-intro">
         <h2>一个连贯的创作流程</h2>
         <p>故事准备 · 章节写作 · 资料库</p>
         <p>
           从一个想法开始，也可以直接导入稿件。需要时让 AI 协助，采用前先预览。
         </p>
-      </div>
+      </div>}
       {creating && (
         <NewCreationDialog
           books={books}

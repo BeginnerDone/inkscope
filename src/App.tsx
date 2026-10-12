@@ -1,3 +1,4 @@
+import { readStorage, writeStorage } from "./lib/storage";
 import { AnalysisPreparationDialog } from "./components/AnalysisPreparationDialog";
 import { ReadingCoverage } from "./components/ReadingCoverage";
 import { formatWordCount } from "./lib/word-count";
@@ -61,7 +62,7 @@ import type {
   TeachingSection,
 } from "./types";
 
-type View = "home" | "import" | "reader" | "analyzing" | "report" | "creation";
+type View = "home" | "import" | "reader" | "analyzing" | "report" | "creation" | "writer";
 type ReportTab =
   | "overview"
   | "outline"
@@ -83,7 +84,7 @@ function readConfig(): ModelConfig {
   try {
     return {
       ...defaultConfig,
-      ...JSON.parse(localStorage.getItem("inkscope-model") || "{}"),
+      ...JSON.parse(readStorage("inkscope-model") || "{}"),
     };
   } catch {
     return defaultConfig;
@@ -196,6 +197,7 @@ function normalizeReport(input: AnalysisReport): AnalysisReport {
 
 function App() {
   const [view, setView] = useState<View>("home");
+  const [writerFocus, setWriterFocus] = useState(false);
   const [creationSeed, setCreationSeed] = useState<CreationSeed | null>(null);
   const [creationFocus, setCreationFocus] = useState(false);
   const [creationMounted, setCreationMounted] = useState(false);
@@ -298,9 +300,9 @@ function App() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
 
-  const saveConfig = (next: ModelConfig) => {
+  const saveConfig = async (next: ModelConfig) => {
     try {
-      localStorage.setItem("inkscope-model", JSON.stringify(next));
+      await writeStorage("inkscope-model", JSON.stringify(next));
       setConfig(next);
       setSettingsOpen(false);
       toast.success("模型设置已保存");
@@ -330,8 +332,7 @@ function App() {
       <SidebarProvider
         style={{ "--sidebar-width": "13.5rem" } as CSSProperties}
       >
-        {!(view === "reader" && (readingMode || phoneMode)) &&
-          !(view === "creation" && creationFocus) && (
+        {view !== "writer" && view !== "creation" && !(view === "reader" && (readingMode || phoneMode)) && (
             <AppSidebar
               view={view}
               books={books}
@@ -345,15 +346,15 @@ function App() {
             />
           )}
         <SidebarInset
-          className={`main${(view === "reader" && (readingMode || phoneMode)) || (view === "creation" && creationFocus) ? " main--reader-focus" : ""}`}
+          className={`main${(view === "reader" && (readingMode || phoneMode)) || ((view === "creation" && creationFocus) || (view === "writer" && writerFocus)) ? " main--reader-focus" : ""}`}
         >
           {!(view === "reader" && (readingMode || phoneMode)) &&
-            !(view === "creation" && creationFocus) && (
+            !((view === "creation" && creationFocus) || (view === "writer" && writerFocus)) && (
               <header className="topbar">
                 <div className="topbar-leading">
-                  <SidebarTrigger aria-label="展开或收起导航" />
+                  {view !== "writer" && view !== "creation" && <SidebarTrigger aria-label="展开或收起导航" />}
                   <Separator orientation="vertical" className="h-4" />
-                  <div className="crumb">
+                  <nav className="workspace-switch" aria-label="工作区切换"><Button variant={view !== "writer" && view !== "creation" ? "secondary" : "ghost"} size="sm" onClick={() => setView("home")}>阅读</Button><Button variant={view === "writer" ? "secondary" : "ghost"} size="sm" onClick={() => setView("writer")}>写作</Button><Button aria-label="创作空间" variant={view === "creation" ? "secondary" : "ghost"} size="sm" onClick={() => openCreation()}>AI 创作</Button></nav><div className="crumb">
                     <span>工作空间</span>
                     <ChevronRight size={14} />
                     <b>
@@ -363,6 +364,8 @@ function App() {
                           ? "添加书籍"
                           : view === "reader"
                             ? "阅读"
+                            : view === "writer"
+                              ? "写作空间"
                             : view === "creation"
                               ? "创作空间"
                               : view === "analyzing"
@@ -412,7 +415,8 @@ function App() {
               </AlertDescription>
             </Alert>
           )}
-          {creationMounted && (
+          {view === "writer" && <CreationView mode="writer" books={books} config={config} onSettings={() => setSettingsOpen(true)} seed={null} onSeedConsumed={() => {}} onFocusChange={setWriterFocus} />}
+          {view === "creation" && creationMounted && (
             <div hidden={view !== "creation"}>
               <CreationView
                 books={books}

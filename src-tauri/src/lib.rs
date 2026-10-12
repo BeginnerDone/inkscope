@@ -15,6 +15,8 @@ mod completeness;
 mod creation;
 mod reader_data;
 mod speech;
+mod storage;
+mod writer;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1044,6 +1046,9 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            writer::writer_assist,
+            storage::initialize_storage,
+            storage::write_storage,
             list_books,
             get_book,
             list_chapters,

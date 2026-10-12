@@ -1,3 +1,5 @@
+import { toast } from "sonner";
+import { readStorage, writeStorage } from "./storage";
 export type ReaderTheme = "white" | "paper" | "mist" | "sage" | "night";
 export type ReaderPrefs = {
   phoneMode: boolean;
@@ -28,7 +30,7 @@ const themes = new Set<ReaderTheme>([
 ]);
 export function readReaderPrefs(): ReaderPrefs {
   try {
-    const stored = JSON.parse(localStorage.getItem(storageKey) || "{}");
+    const stored = JSON.parse(readStorage(storageKey) || "{}");
     return {
       phoneMode: stored.phoneMode === true,
       theme: themes.has(stored.theme) ? stored.theme : defaultReaderPrefs.theme,
@@ -52,7 +54,7 @@ export function readReaderPrefs(): ReaderPrefs {
 }
 export function saveReaderPrefs(prefs: ReaderPrefs): void {
   try {
-    localStorage.setItem(storageKey, JSON.stringify(prefs));
+    void writeStorage(storageKey, JSON.stringify(prefs)).catch(() => toast.error("阅读设置保存失败"));
   } catch {
     /* Private storage can be unavailable. */
   }

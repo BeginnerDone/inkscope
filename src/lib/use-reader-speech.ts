@@ -1,3 +1,4 @@
+import { readStorage, writeStorage } from "./storage";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { fetchSpeechAudio } from "@/lib/tauri";
@@ -28,7 +29,7 @@ const defaults: SpeechPrefs = {
 };
 function readPrefs(): SpeechPrefs {
   try {
-    const value = JSON.parse(localStorage.getItem(storageKey) || "{}");
+    const value = JSON.parse(readStorage(storageKey) || "{}");
     return {
       engine: value.engine === "online" ? "online" : "system",
       template: typeof value.template === "string" ? value.template : "",
@@ -78,7 +79,7 @@ export function useReaderSpeech(
 
   useEffect(() => {
     try {
-      localStorage.setItem(storageKey, JSON.stringify(prefs));
+      void writeStorage(storageKey, JSON.stringify(prefs)).catch(() => toast.error("朗读设置保存失败"));
     } catch {
       /* storage unavailable */
     }

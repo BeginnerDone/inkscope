@@ -193,6 +193,10 @@ async function mockDesktop(
         },
         core: {
           invoke: async (command: string, args: any = {}) => {
+            const store = ((window as any).__SQLITE_TEST__ ||= JSON.parse(sessionStorage.getItem("test-sqlite") || "{}"));
+            if (command === "initialize_storage") { for (const [key,value] of Object.entries(args.legacy || {})) if (!(key in store)) store[key]=value; return {...store}; }
+            if (command === "write_storage") { if(args.value === null) delete store[args.key]; else store[args.key]=args.value; sessionStorage.setItem("test-sqlite",JSON.stringify(store)); return; }
+
             state.calls.push({ command, args });
             if (command === "list_books")
               return books.filter(
@@ -1109,7 +1113,7 @@ test("reader resumes a chapter, keeps exact word counts and offers a clean readi
   expect(
     await page.evaluate(
       () =>
-        JSON.parse(localStorage.getItem("inkscope-reader-v1") || "{}").fontSize,
+        JSON.parse((window as any).__SQLITE_TEST__["inkscope-reader-v1"] || "{}").fontSize,
     ),
   ).toBe(18);
   await page.getByRole("button", { name: "阅读模式" }).click();
@@ -1462,6 +1466,6 @@ test("report idea can seed a new original creation project", async ({
   await expect(dialog.getByLabel("故事灵感")).toHaveValue(/记录越准确/);
   await dialog.getByRole("button", { name: "取消", exact: true }).click();
   await expect(
-    page.getByRole("heading", { name: "创作空间", exact: true }),
+    page.getByRole("heading", { name: "AI 创作空间", exact: true }),
   ).toBeVisible();
 });

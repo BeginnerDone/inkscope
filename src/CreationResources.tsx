@@ -16,7 +16,7 @@ export function CreationResources({ project, onChange, onSelect, selectedId }: {
   const selected = selectedId;
   const [convert, setConvert] = useState(false);
   const [chosen, setChosen] = useState<string[]>([]);
-  const entries = project.documents.filter(d => !["chapter", "outline"].includes(d.kind) && (["brief", "resource", "source"].includes(d.kind) || !!d.content.trim()));
+  const entries = project.documents.filter(d => d.details?.category !== "trash" && !["chapter", "outline"].includes(d.kind) && (["brief", "resource", "source"].includes(d.kind) || !!d.content.trim()));
   const visible = entries.filter(d => (category === "all" || categoryOf(d) === category) && `${d.title} ${d.content}`.toLowerCase().includes(query.toLowerCase()));
   const doc = entries.find(d => d.id === selected);
   const update = (patch: Partial<CreationDoc>) => onChange(p => ({ ...p, documents: p.documents.map(d => d.id === selected ? { ...d, ...patch } : d) }));
