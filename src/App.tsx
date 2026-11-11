@@ -49,6 +49,7 @@ import { SearchModal } from "./SearchModal";
 import { SettingsModal } from "./SettingsModal";
 import { AppSidebar } from "./components/AppSidebar";
 import {
+  startIdeaJob, getIdeaJob, controlIdeaJob, type IdeaJob,
   deleteBook,
   getBook,
   isTauri,
@@ -263,6 +264,47 @@ function App() {
     } catch (e) {
       setError(errorText(e));
     }
+  };
+
+  const [ideaJob, setIdeaJob] = useState<IdeaJob | null>(null);
+  const appendingBook = ideaJob && ["running", "paused"].includes(ideaJob.status) ? ideaJob.bookId : null;
+  useEffect(() => {
+    if (!selected?.id) return;
+    let active = true;
+    void getIdeaJob(selected.id).then(job => { if (active) setIdeaJob(job); }).catch(() => {});
+    return () => { active = false; };
+  }, [selected?.id]);
+  useEffect(() => {
+    if (!ideaJob || ideaJob.status !== "running") return;
+    let active = true;
+    let timer: ReturnType<typeof setTimeout>;
+    const poll = async () => {
+      try {
+        const next = await getIdeaJob(ideaJob.bookId);
+        if (!active || !next) return;
+        if (next.status === "completed") {
+          const book = await getBook(next.bookId);
+          if (!active) return;
+          setSelected(current => current?.id === book.id ? book : current);
+          await refreshBooks();
+          toast.success(`已追加 1 个${next.platform}方案`);
+          setIdeaJob(next);
+        } else {
+          setIdeaJob(next);
+          if (next.status === "running") timer = setTimeout(poll, 800);
+        }
+      } catch (e) { if (active) { setError(errorText(e)); timer = setTimeout(poll, 2000); } }
+    };
+    timer = setTimeout(poll, 300);
+    return () => { active = false; clearTimeout(timer); };
+  }, [ideaJob?.id, ideaJob?.status, refreshBooks]);
+  const addIdeas = async (book: BookSummary, platform: "起点" | "番茄") => {
+    if (!config.apiKey.trim()) { setSettingsOpen(true); throw new Error("请先配置模型，再追加灵感"); }
+    setIdeaJob(await startIdeaJob(book.id, config, platform));
+  };
+  const controlIdeas = async (action: "pause" | "resume" | "cancel") => {
+    if (!ideaJob) return;
+    setIdeaJob(await controlIdeaJob(ideaJob.bookId, ideaJob.id, action, config));
   };
 
   const [analysisTarget, setAnalysisTarget] = useState<BookSummary | null>(
@@ -481,6 +523,10 @@ function App() {
               book={selected}
               onNew={newBook}
               onCreation={openCreation}
+              appending={appendingBook !== null}
+              onAppendIdeas={platform => addIdeas(selected, platform)}
+              ideaJob={ideaJob?.bookId === selected.id ? ideaJob : null}
+              onControlIdeas={controlIdeas}
               onReanalyze={() => void runBook(selected)}
             />
           )}
@@ -623,11 +669,19 @@ function ReportView({
   onNew,
   onReanalyze,
   onCreation,
+  onAppendIdeas,
+  appending,
+  ideaJob,
+  onControlIdeas,
 }: {
   book: BookSummary;
   onNew: () => void;
   onReanalyze: () => void;
   onCreation: (seed: CreationSeed) => void;
+  onAppendIdeas: (platform: "起点" | "番茄") => Promise<void>;
+  appending: boolean;
+  ideaJob: IdeaJob | null;
+  onControlIdeas: (action: "pause" | "resume" | "cancel") => Promise<void>;
 }) {
   const report = normalizeReport(book.report as AnalysisReport);
   const [tab, setTab] = useState<ReportTab>("overview");
@@ -657,7 +711,7 @@ function ReportView({
             <Copy size={17} />
             复制 JSON
           </Button>
-          <Button variant="outline" onClick={onReanalyze}>
+          <Button variant="outline" disabled={appending} onClick={onReanalyze}>
             <BrainCircuit size={17} />
             重新分析
           </Button>
@@ -726,7 +780,7 @@ function ReportView({
           <LessonsView report={report} />
         </TabsContent>
         <TabsContent value="ideas">
-          <IdeasView report={report} onCreation={onCreation} />
+          <IdeasView report={report} onCreation={onCreation} onAppend={onAppendIdeas} appending={appending} job={ideaJob} onControl={onControlIdeas} />
         </TabsContent>
       </Tabs>
     </div>

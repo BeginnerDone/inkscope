@@ -81,11 +81,18 @@ function invoke<T>(
 export const listCreations = () => invoke<CreationSummary[]>("list_creations");
 export const getCreation = (id: string) =>
   invoke<CreationProject>("get_creation", { id });
+export type CreationStarter = {
+  rules: string;
+  outline: string;
+  reference: string;
+  chapters: Array<{ title: string; goal: string; outcome: string }>;
+};
 export const createCreation = (input: {
   title: string;
   genre: string;
   audience: string;
   seed: string;
+  starter?: CreationStarter;
   content?: string;
   bookId?: string;
   importKind?: "prose" | "settings" | "reference";

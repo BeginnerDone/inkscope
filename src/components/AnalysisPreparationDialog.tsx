@@ -34,7 +34,7 @@ export function AnalysisPreparationDialog({
   const [preparation, setPreparation] = useState<AnalysisPreparation | null>(
     null,
   );
-  const [phase, setPhase] = useState("正在核对正文与目录…");
+  const [phase, setPhase] = useState("正在读取本地正文…");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [downloadProgress, setDownloadProgress] =
@@ -89,7 +89,7 @@ export function AnalysisPreparationDialog({
       }
       setPreparation({ ...preparation, book: current });
       await onUpdated(current);
-      await onStart(current, false);
+      await onStart(current, !download && current.sourceType === "legado" && current.contentStatus !== "complete");
       onClose();
     } catch (error) {
       setError(String(error));
@@ -100,7 +100,7 @@ export function AnalysisPreparationDialog({
     }
   };
   const current = preparation?.book ?? book;
-  const needsDownload =
+  const canSupplement =
     current.sourceType === "legado" && current.contentStatus !== "complete";
   const receipt = current.downloadReceipt;
   return (
@@ -123,7 +123,7 @@ export function AnalysisPreparationDialog({
         <DialogHeader>
           <DialogTitle>准备分析《{book.title}》</DialogTitle>
           <DialogDescription>
-            先确认正文范围，再按顺序审读、核验原文和综合全书线索。
+            直接使用已保存正文，按顺序审读、核验原文和综合线索。
           </DialogDescription>
         </DialogHeader>
         <div className="flex flex-col gap-4 py-2 text-sm">
@@ -132,8 +132,8 @@ export function AnalysisPreparationDialog({
               {formatWordCount(current.characterCount)} ·{" "}
               {current.contentStatus === "complete"
                 ? "已下载目录全部章节"
-                : needsDownload
-                  ? "完整性待确认"
+                : canSupplement
+                  ? "本地正文已保存 · 全本完整性未确认"
                   : "本地已保存正文"}
             </p>
             {receipt && (
@@ -153,9 +153,9 @@ export function AnalysisPreparationDialog({
           <p className="leading-6 text-muted-foreground">
             分析使用本地书库保存的正文，无需另行导出文件。逐段审读后生成综合报告；长篇作品耗时和模型用量会增加。
           </p>
-          {needsDownload && preparation && !preparation.canDownload && (
+          {canSupplement && preparation && !preparation.canDownload && (
             <p className="leading-6 text-muted-foreground">
-              当前无法确认或下载全部章节，请修复书源后再分析。
+              书源当前不可用，不影响分析已保存的本地正文。
             </p>
           )}
           {phase && (
@@ -195,16 +195,17 @@ export function AnalysisPreparationDialog({
           <Button variant="ghost" disabled={busy} onClick={onClose}>
             取消
           </Button>
+          {canSupplement && preparation?.canDownload && <Button
+            variant="outline"
+            disabled={busy}
+            onClick={() => void run(true)}
+          >下载完整正文并分析</Button>}
           <Button
-            disabled={
-              busy ||
-              !preparation ||
-              (needsDownload && !preparation.canDownload)
-            }
-            onClick={() => void run(needsDownload)}
+            disabled={busy || !preparation || !(preparation.canAnalyzeLocal ?? current.characterCount > 0)}
+            onClick={() => void run(false)}
           >
-            {busy && <LoaderCircle className="size-4 animate-spin" />}
-            {needsDownload ? "下载完整正文并分析" : "开始通读分析"}
+            {busy && <LoaderCircle className="animate-spin" data-icon="inline-start" />}
+            {canSupplement ? "分析本地正文" : "开始通读分析"}
           </Button>
         </DialogFooter>
       </DialogContent>

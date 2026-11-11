@@ -811,6 +811,7 @@ export function ReaderView({
                 分析报告
               </Button>
             )}
+            {!book.report && (
             <Button
               size="sm"
               variant="ghost"
@@ -824,6 +825,7 @@ export function ReaderView({
                   ? "继续分析"
                   : "开始分析"}
             </Button>
+            )}
             <span className="reader-action-divider" />
             <Button
               size="sm"

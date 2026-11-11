@@ -31,6 +31,7 @@ pub fn save(conn: &Connection, receipt: &reading::Receipt) -> Result<(), String>
 pub struct Preparation {
     pub book: BookSummary,
     pub can_download: bool,
+    pub can_analyze_local: bool,
     pub message: String,
 }
 
@@ -41,38 +42,26 @@ pub fn source(app: &AppHandle, book: &BookSummary) -> Result<(String, String), S
 }
 
 pub async fn prepare(app: &AppHandle, id: &str) -> Result<Preparation, String> {
-    let book = read_book(app, id)?;
+    let mut book = read_book(app, id)?;
+    let content = local_content(&open_book(app, id)?)?;
+    let can_analyze_local = !content.trim().is_empty();
+    book.character_count = content.chars().count() as i64;
     if book.source_type != "legado" {
-        return Ok(Preparation {book, can_download:false,message:"将逐段审读已保存文件的全部正文。文件是否包含作品全本需由你确认；应用不会仅凭文件名判断完结。".into()});
+        return Ok(Preparation {book,can_analyze_local, can_download:false,message:"将逐段审读已保存文件的全部正文。文件是否包含作品全本需由你确认；应用不会仅凭文件名判断完结。".into()});
     }
     if book.content_status == "complete" {
-        return Ok(Preparation {book,can_download:true,message:"已保存上次核对的书源目录全部章节，无需重复下载。后续连载更新不包含在本次完整性记录中。".into()});
+        return Ok(Preparation {book,can_analyze_local,can_download:true,message:"已保存上次核对的书源目录全部章节，无需重复下载。后续连载更新不包含在本次完整性记录中。".into()});
     }
-    let (source_key, book_url) = match source(app, &book) {
+    let _source = match source(app, &book) {
         Ok(value) => value,
-        Err(error) => return Ok(Preparation {book,can_download:false,message:format!("完整性未确认，无法自动下载：{error}。可返回重新选择书源，或明确仅分析现有正文。")}),
+        Err(error) => return Ok(Preparation {book,can_analyze_local,can_download:false,message:format!("完整性未确认，无法自动下载：{error}。可以直接分析本地正文。")}),
     };
     if book.download_receipt.is_some() {
-        return Ok(Preparation {book,can_download:true,message:"现有正文未包含下载时的全部目录章节。建议下载完整正文后自动分析；下载失败会保留原正文和报告。".into()});
+        return Ok(Preparation {book,can_analyze_local,can_download:true,message:"现有正文未包含下载时的全部目录章节。可以直接分析已保存正文，也可选择补全下载；下载失败会保留原正文和报告。".into()});
     }
-    // Legacy imports have no receipt. Only a strict ordered title/body match is
-    // accepted; a count alone is insufficient to call a download complete.
-    let catalog = match legado::preview_toc(app.clone(), legado::PreviewRequest {source_key:source_key.clone(),book_url:book_url.clone()}).await {
-        Ok(value) => value,
-        Err(error) => return Ok(Preparation {book,can_download:true,message:format!("暂时无法核对书源目录：{error}。完整性仍未知，可尝试重新下载。")}),
-    };
-    let local = {
-        let conn=open_book(app,id)?;
-        let mut stmt=conn.prepare("SELECT title,content FROM chapters ORDER BY position").map_err(|e|e.to_string())?;
-        let rows=stmt.query_map([],|row|Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?))).map_err(|e|e.to_string())?;
-        rows.collect::<Result<Vec<_>,_>>().map_err(|e|e.to_string())?
-    };
-    if reading::catalog_matches(&local,&catalog) {
-        let receipt=reading::Receipt {source_key,book_url,total_chapters:catalog.len(),downloaded_chapters:local.len(),failed_chapters:0,checked_at:now()};
-        save(&open_book(app,id)?,&receipt)?;
-        return Ok(Preparation {book:read_book(app,id)?,can_download:true,message:"已核对当前目录：章节顺序、名称与本地正文匹配，无需补全。".into()});
-    }
-    Ok(Preparation {book,can_download:true,message:format!("书源当前有 {} 章，本地目录或正文与之不匹配。建议下载完整正文后自动分析。",catalog.len())})
+    // Old imports predate receipts. Unknown completeness is not missing content.
+    // Preparing a local analysis must never depend on a live source catalog.
+    Ok(Preparation {book,can_analyze_local,can_download:true,message:"旧版导入未记录下载完整性，本地正文仍可直接分析。报告会标明仅覆盖已保存正文；如需补全或获取后续更新，可选择下载。".into()})
 }
 
 pub async fn refresh(app: &AppHandle, id: &str, progress_id: Option<String>) -> Result<BookSummary, String> {
@@ -101,4 +90,49 @@ pub async fn refresh(app: &AppHandle, id: &str, progress_id: Option<String>) -> 
     tx.execute("UPDATE analysis_job SET status='ready',stage='完整正文已保存，等待分析',completed=0,total=0,error=NULL,updated_at=? WHERE id=1",params![now()]).map_err(|e|e.to_string())?;
     tx.commit().map_err(|e|e.to_string())?;
     read_book(app,id)
+}
+
+/// Use the same persisted text as export, without requesting a book source.
+pub fn local_content(conn: &Connection) -> Result<String, String> {
+    let content: String = conn.query_row("SELECT content FROM book LIMIT 1", [], |row| row.get(0)).map_err(|e|e.to_string())?;
+    if !content.trim().is_empty() { return Ok(content); }
+    let mut stmt = conn.prepare("SELECT title,content FROM chapters ORDER BY position").map_err(|e|e.to_string())?;
+    let rows = stmt.query_map([], |row| Ok((row.get::<_,String>(0)?, row.get::<_,String>(1)?))).map_err(|e|e.to_string())?;
+    let mut chapters = Vec::new();
+    for row in rows {
+        let (title, body) = row.map_err(|e|e.to_string())?;
+        if !body.trim().is_empty() { chapters.push(format!("{title}\n{body}")); }
+    }
+    Ok(chapters.join("\n\n"))
+}
+
+pub fn allow_analysis(source_type: &str, status: &str, content: &str, allow_partial: bool) -> Result<(), String> {
+    if content.trim().is_empty() { return Err("本地尚无可分析正文，请先导入或下载正文".into()); }
+    if source_type == "legado" && status != "complete" && !allow_partial {
+        return Err("完整性尚未确认，可选择“分析本地正文”或补全下载后分析".into());
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn legacy_and_partial_text_can_be_analyzed_without_claiming_completeness() {
+        for status in ["unknown", "partial"] {
+            assert!(allow_analysis("legado", status, "本地正文", true).is_ok());
+            assert!(allow_analysis("legado", status, "本地正文", false).is_err());
+        }
+        assert!(allow_analysis("legado", "complete", "本地正文", false).is_ok());
+        assert!(allow_analysis("file", "local", "本地正文", false).is_ok());
+        assert!(allow_analysis("legado", "complete", "  ", true).is_err());
+    }
+    #[test]
+    fn chapter_only_legacy_book_uses_the_exportable_local_text_in_order() {
+        let conn=Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE book(content TEXT); INSERT INTO book VALUES(''); CREATE TABLE chapters(position INTEGER,title TEXT,content TEXT); INSERT INTO chapters VALUES(1,'第二章','正文二'),(0,'第一章','正文一'),(2,'第三章','');").unwrap();
+        assert_eq!(local_content(&conn).unwrap(), "第一章\n正文一\n\n第二章\n正文二");
+        conn.execute("UPDATE book SET content='原始全文'", []).unwrap();
+        assert_eq!(local_content(&conn).unwrap(), "原始全文");
+    }
 }

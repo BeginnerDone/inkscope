@@ -119,6 +119,7 @@ export type DownloadReceipt = {
 export type AnalysisPreparation = {
   book: BookSummary;
   canDownload: boolean;
+  canAnalyzeLocal: boolean;
   message: string;
 };
 export type ReadingCoverage = {

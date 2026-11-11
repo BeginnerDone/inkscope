@@ -1,6 +1,6 @@
 use serde_json::Value;
 
-pub const MODULE: &str = "原创灵感与平台选题 v2";
+pub const MODULE: &str = "原创灵感与平台选题 v3";
 pub const RULES: &str = include_str!("prompts/ideas.txt");
 pub const SCHEMA: &str = r#"{
   "ideasVersion": 2,
@@ -23,24 +23,54 @@ pub const SCHEMA: &str = r#"{
   }]
 }"#;
 
-pub fn prompt(title: &str, summaries: &[Value]) -> String {
-    format!("{RULES}\n原作资料：{}\n输出结构（ideas数组必须有四案，起点、番茄各两案）：\n{SCHEMA}",
-        serde_json::json!({"title": title, "summaries": summaries}))
+pub const PER_PLATFORM: usize = 5;
+pub const PLATFORMS: &[&str] = &["起点", "番茄"];
+
+pub fn platforms(platform: Option<&str>) -> Result<Vec<&str>, String> {
+    match platform {
+        None => Ok(PLATFORMS.to_vec()),
+        Some(name) if PLATFORMS.contains(&name) => Ok(vec![name]),
+        _ => Err("请选择起点、番茄或全部平台".into()),
+    }
+}
+
+pub fn prompt(title: &str, summaries: &[Value], existing: &[Value], platforms: &[&str]) -> String {
+    prompt_count(title, summaries, existing, platforms, PER_PLATFORM)
+}
+
+pub fn prompt_count(title: &str, summaries: &[Value], existing: &[Value], platforms: &[&str], count: usize) -> String {
+    let existing: Vec<Value> = existing.iter().map(|idea| serde_json::json!({
+        "title":idea["title"],"platform":idea["platform"],"premise":idea["premise"],
+        "sellingPoint":idea["sellingPoint"],"ruleBreak":idea["ruleBreak"],"storyEngine":idea["storyEngine"],
+        "difference":idea["difference"]
+    })).collect();
+    format!("{RULES}\n本批数量：平台{}，每个平台必须恰好{count}案，共{}案。只输出本批新方案，不复述已有方案。\n原作资料：{}\n已有方案（用于排除重复，不能换标题复用其核心机制、主角目标和开篇冲突）：{}\n输出结构：\n{SCHEMA}",
+        platforms.join("、"), platforms.len()*count,
+        serde_json::json!({"title": title, "summaries": summaries}), serde_json::json!(existing))
 }
 
 // Validate the model boundary before persisting or rendering. This checks completeness,
 // not literary quality; originality and market appeal still require human reading.
 pub fn validate(value: &Value) -> Result<(), String> {
-    let fail = || "灵感结果结构不完整，需要四个完整方案（起点、番茄各两个）。请重试，已完成的拆书模块会保留。".to_string();
+    validate_batch(value, PLATFORMS)
+}
+
+pub fn validate_batch(value: &Value, platforms: &[&str]) -> Result<(), String> {
+    validate_count(value, platforms, PER_PLATFORM)
+}
+
+pub fn validate_count(value: &Value, platforms: &[&str], count: usize) -> Result<(), String> {
+    let fail = || format!("灵感结果结构不完整，需要{}每个平台各{count}个完整方案。已保存的方案不会被覆盖。", platforms.join("、"));
     let ideas = value["ideas"].as_array().ok_or_else(fail)?;
-    if value["ideasVersion"] != 2 || ideas.len() != 4 {
+    if value["ideasVersion"] != 2 || ideas.len() != platforms.len() * count {
         return Err(fail());
     }
-    for platform in ["起点", "番茄"] {
-        if ideas.iter().filter(|idea| idea["platform"] == platform).count() != 2 {
+    for platform in platforms {
+        if ideas.iter().filter(|idea| idea["platform"].as_str() == Some(*platform)).count() != count {
             return Err(fail());
         }
     }
+    ensure_distinct(&[], ideas)?;
     for idea in ideas {
         for field in ["title", "genre", "audience", "sellingPoint", "premise", "sourceAnchor",
             "convention", "ruleBreak", "difference", "firstPayoff", "storyEngine",
@@ -67,6 +97,57 @@ pub fn validate(value: &Value) -> Result<(), String> {
     Ok(())
 }
 
+fn identity(value: &Value) -> String {
+    value.as_str().unwrap_or("").chars().filter(|c| !c.is_whitespace() && !"《》：:，,。.!！?？".contains(*c)).flat_map(char::to_lowercase).collect()
+}
+
+pub fn ensure_distinct(existing: &[Value], additions: &[Value]) -> Result<(), String> {
+    let mut titles = std::collections::HashSet::new();
+    let mut pitches = std::collections::HashSet::new();
+    for idea in existing {
+        titles.insert(identity(&idea["title"]));
+        let pitch=identity(&idea["sellingPoint"]);
+        if !pitch.is_empty() { pitches.insert(pitch); }
+    }
+    for idea in additions {
+        let title=identity(&idea["title"]);
+        let pitch=identity(&idea["sellingPoint"]);
+        if title.is_empty() || !titles.insert(title) || (!pitch.is_empty() && !pitches.insert(pitch)) {
+            return Err("本批灵感与已有方案或同批方案的标题、卖点重复，请重构后重新生成".into());
+        }
+    }
+    Ok(())
+}
+
+/// Append atomically after validating the entire new batch. Never replace old ideas
+/// or unrelated analysis fields, including reports from older schema versions.
+pub fn existing_ideas(report: &Value) -> Result<Vec<Value>, String> {
+    match report.get("ideas") {
+        None | Some(Value::Null) => Ok(Vec::new()),
+        Some(Value::Array(items)) => Ok(items.clone()),
+        Some(value @ Value::Object(_)) => Ok(vec![value.clone()]),
+        _ => Err("已有灵感格式无效，未修改原报告".into()),
+    }
+}
+
+pub fn append(report: &Value, batch: &Value, platforms: &[&str]) -> Result<Value, String> {
+    append_count(report, batch, platforms, PER_PLATFORM)
+}
+
+pub fn append_count(report: &Value, batch: &Value, platforms: &[&str], count: usize) -> Result<Value, String> {
+    validate_count(batch, platforms, count)?;
+    let existing = existing_ideas(report)?;
+    let additions = batch["ideas"].as_array().ok_or("缺少新方案")?;
+    ensure_distinct(&existing, additions)?;
+    let mut combined = existing;
+    combined.extend(additions.iter().cloned());
+    let mut result = report.clone();
+    if !result.is_object() { return Err("原报告格式无效，无法追加".into()); }
+    result["ideas"] = serde_json::json!(combined);
+    result["ideasVersion"] = serde_json::json!(2);
+    Ok(result)
+}
+
 fn nonempty(value: &Value) -> bool {
     value.as_str().is_some_and(|text| !text.trim().is_empty())
 }
@@ -84,10 +165,24 @@ mod tests {
         for field in ["opening", "escalation"] {
             idea[field] = json!(vec![idea[field][0].clone(); 3]);
         }
-        result["ideas"] = json!(["起点", "起点", "番茄", "番茄"].map(|platform| {
-            let mut copy = idea.clone(); copy["platform"] = json!(platform); copy
-        }));
+        result["ideas"] = json!((0..10).map(|i| {
+            let mut copy = idea.clone(); copy["platform"] = json!(if i<5 {"起点"} else {"番茄"});
+            copy["title"]=json!(format!("方案{i}")); copy["sellingPoint"]=json!(format!("卖点{i}")); copy
+        }).collect::<Vec<_>>());
         result
+    }
+
+    #[test]
+    fn single_proposal_count_is_independent_of_initial_report_count() {
+        let mut single=complete_result();
+        single["ideas"]=serde_json::json!([single["ideas"][0].clone()]);
+        assert!(validate_count(&single,&["起点"],1).is_ok());
+        assert!(validate(&single).is_err());
+        let report=serde_json::json!({"ideas":[{"title":"已有方案"}],"summary":"保留原报告"});
+        let updated=append_count(&report,&single,&["起点"],1).unwrap();
+        assert_eq!(updated["ideas"].as_array().unwrap().len(),2);
+        assert_eq!(updated["summary"],report["summary"]);
+        assert!(validate_count(&single,&["番茄"],1).is_err());
     }
 
     #[test]
@@ -115,4 +210,27 @@ mod tests {
         }
         assert!(validate(&result).is_err());
     }
+    #[test]
+    fn appends_without_changing_old_ideas_or_report_and_rejects_duplicates() {
+        let report = json!({"summary":"原报告", "ideas":[{"title":"旧方案", "premise":"原构思"}], "coverage":{"processedSegments":9}});
+        let batch = complete_result();
+        let result=append(&report,&batch,PLATFORMS).unwrap();
+        assert_eq!(result["ideas"].as_array().unwrap().len(),11);
+        assert_eq!(result["ideas"][0],report["ideas"][0]);
+        assert_eq!(result["coverage"],report["coverage"]);
+        assert_eq!(result["summary"],report["summary"]);
+        assert!(append(&result,&batch,PLATFORMS).is_err());
+        let mut single=batch.clone();
+        single["ideas"]=json!(batch["ideas"].as_array().unwrap()[..5]);
+        assert!(validate_batch(&single,&["起点"]).is_ok());
+        assert!(validate(&single).is_err());
+        single["ideas"][1]["title"]=single["ideas"][0]["title"].clone();
+        assert!(validate_batch(&single,&["起点"]).is_err());
+        assert!(platforms(Some("未知平台")).is_err());
+        let single_legacy = json!({"ideas":{"title":"旧版单个对象","premise":"原构思"}});
+        let merged=append(&single_legacy,&batch,PLATFORMS).unwrap();
+        assert_eq!(merged["ideas"][0], single_legacy["ideas"]);
+        assert!(append(&json!({"ideas":"损坏数据"}),&batch,PLATFORMS).is_err());
+    }
+
 }

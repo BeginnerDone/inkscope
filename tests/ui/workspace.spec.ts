@@ -14,7 +14,8 @@ async function mockDesktop(
     legacy?: boolean;
     manySources?: boolean;
     previewDelay?: boolean;
-    preparationMode?: "partial" | "complete" | "legacy-full";
+    preparationMode?: "partial" | "complete" | "legacy-full" | "legacy-offline";
+    appendFails?: boolean;
     coverage?: boolean;
     resumePosition?: number;
     downloadFails?: boolean;
@@ -33,6 +34,7 @@ async function mockDesktop(
       downloadFails,
       holdDownloadProgress,
       preparationMode,
+      appendFails,
     }) => {
       const report = {
         overallScore: 82,
@@ -67,6 +69,15 @@ async function mockDesktop(
             hook: "是谁改写了昨天？",
           })),
           storyEngine: "每解决一个事件，就必须重新判断一段重要关系。",
+          sourceAnchor: "从原作的主动选择提取情绪价值。",
+          convention: "预知未来直接给答案。",
+          ruleBreak: "调查行为会改变证据。",
+          firstPayoff: "救下失踪者，取得信任却暴露了身份。",
+          platformFit: "以规则推演和累积收益维持追读。",
+          alternatePlatform: "开篇先展示失踪现场。",
+          validation: "试读前三章并复述卖点。",
+          differences: [{axis:"主角目标",original:"寻找真相",proposal:"保护见证者",consequence:"必须选择公开证据的时机"}],
+          escalation: [{stage:"1—10章",conflict:"证据被改写",payoff:"找回失踪者"},{stage:"11—20章",conflict:"同伴受到威胁",payoff:"建立合作"},{stage:"21—30章",conflict:"记录系统封锁",payoff:"夺回记录权"}],
         })),
       };
       if (coverage) {
@@ -122,7 +133,7 @@ async function mockDesktop(
             sourceType: i === 0 ? "legado" : "file",
             contentStatus:
               i === 0
-                ? preparationMode === "legacy-full"
+                ? (preparationMode === "legacy-full" || preparationMode === "legacy-offline")
                   ? "unknown"
                   : preparationMode || "complete"
                 : "local",
@@ -155,6 +166,8 @@ async function mockDesktop(
           responseTime: 200,
         }),
       );
+      let ideaJob: any = null;
+      let jobTicks = 0;
       const state = { calls: [] as { command: string; args: any }[] };
       const progressListeners = new Set<(event: any) => void>();
       const emitProgress = (payload: any) =>
@@ -395,7 +408,8 @@ async function mockDesktop(
                 book.contentStatus = "complete";
               return {
                 book,
-                canDownload: book.sourceType === "legado",
+                canDownload: book.sourceType === "legado" && preparationMode !== "legacy-offline",
+                canAnalyzeLocal: true,
                 message:
                   book.contentStatus === "complete"
                     ? "已核对书源全部章节，无需补全。"
@@ -427,6 +441,27 @@ async function mockDesktop(
                 checkedAt: "2026-10-02",
               };
               return { ...book };
+            }
+            if (command === "start_idea_job") {
+              ideaJob={id:crypto.randomUUID(),bookId:args.id,platform:args.platform,status:"running",completed:0,message:"1/3 · 正在构思新的方案",updatedAt:new Date().toISOString()};
+              jobTicks=0;return {...ideaJob};
+            }
+            if(command === "get_idea_job") {
+              if(ideaJob?.status === "running") {
+                jobTicks++;
+                if(appendFails) {ideaJob.status="failed";ideaJob.message="测试生成失败，旧方案保留";}
+                else if(jobTicks>=4) {
+                  const book=books.find(item=>item.id===ideaJob.bookId)!;
+                  book.report={...book.report!,ideas:[...book.report!.ideas,{...book.report!.ideas[0],platform:ideaJob.platform,title:`新增方案${book.report!.ideas.length}`} ]};
+                  ideaJob.status="completed";ideaJob.completed=3;ideaJob.message="已添加 1 个原创方案";
+                }else if(jobTicks>=2) {ideaJob.completed=1;ideaJob.message="2/3 · 正在审稿";}
+              }
+              return ideaJob ? {...ideaJob} : null;
+            }
+            if(command === "control_idea_job") {
+              ideaJob.status=args.action==="pause"?"paused":args.action==="resume"?"running":"cancelled";
+              ideaJob.message=args.action==="pause"?"已暂停":args.action==="resume"?"正在继续":"已取消，原有方案保留";
+              return {...ideaJob};
             }
             if (command === "start_analysis") {
               const book = books.find((item) => item.id === args.id);
@@ -1468,4 +1503,95 @@ test("report idea can seed a new original creation project", async ({
   await expect(
     page.getByRole("heading", { name: "AI 创作空间", exact: true }),
   ).toBeVisible();
+});
+
+
+async function readyReport(page: Page, options: Parameters<typeof mockDesktop>[1] = {}) {
+  await mockDesktop(page, options);
+  await page.addInitScript(() => localStorage.setItem("inkscope-model", JSON.stringify({apiKey:"test-only",model:"test",baseUrl:"https://example.invalid"})));
+  await page.goto("/");
+  await page.locator('[data-slot="card"]').first().getByRole("button", {name:"阅读",exact:true}).click();
+  await page.getByRole("button", {name:"分析报告",exact:true}).click();
+}
+
+test("legacy book with unavailable source analyzes local exportable text without download", async ({page}) => {
+  await readyReport(page,{preparationMode:"legacy-offline"});
+  await page.getByRole("button",{name:"重新分析"}).click();
+  await expect(page.getByRole("button",{name:"下载完整正文并分析"})).toHaveCount(0);
+  await page.getByRole("button",{name:"分析本地正文",exact:true}).click();
+  await expect(page.getByText("准备原文切片")).toBeVisible();
+  const calls=await page.evaluate(()=>(window as any).__UI_TEST__.calls);
+  expect(calls.find((call:any)=>call.command==="start_analysis").args.allowPartial).toBe(true);
+  expect(calls.some((call:any)=>["refresh_legado_book","preview_legado_toc","extract_legado_book"].includes(call.command))).toBe(false);
+});
+
+test("single idea supports independent mode progress pause resume and cancellation", async ({page}) => {
+  await readyReport(page);
+  await page.getByRole("tab",{name:"原创灵感 4"}).click();
+  // Display filter is independent of the platform used to generate the next idea.
+  await page.getByRole("radio",{name:"番茄 · 2",exact:true}).click();
+  await page.getByRole("button",{name:"添加 1 个灵感",exact:true}).click();
+  await page.getByRole("button",{name:"暂停",exact:true}).click();
+  await expect(page.getByRole("button",{name:"继续生成",exact:true})).toBeVisible();
+  await page.waitForTimeout(1100);
+  await expect(page.locator(".idea-proposal")).toHaveCount(2);
+  await page.getByRole("button",{name:"继续生成",exact:true}).click();
+  await expect(page.getByText(/2\/3 · 正在审稿/)).toBeVisible();
+  await expect(page.getByRole("tab",{name:"原创灵感 5"})).toBeVisible();
+  await page.getByRole("radio",{name:"全部 · 5",exact:true}).click();
+  await expect(page.locator(".idea-proposal")).toHaveCount(5);
+  await page.getByRole("combobox",{name:"灵感生成平台"}).click();
+  await page.getByRole("option",{name:"番茄模式"}).click();
+  await page.getByRole("button",{name:"添加 1 个灵感",exact:true}).click();
+  await page.getByRole("button",{name:"取消生成",exact:true}).click();
+  await expect(page.getByText(/已取消，原有方案保留/)).toBeVisible();
+  await page.waitForTimeout(1100);
+  await expect(page.locator(".idea-proposal")).toHaveCount(5);
+  const calls=await page.evaluate(()=>(window as any).__UI_TEST__.calls);
+  expect(calls.filter((call:any)=>call.command==="start_idea_job").map((call:any)=>call.args.platform)).toEqual(["起点","番茄"]);
+  expect(calls.some((call:any)=>["start_analysis","refresh_legado_book"].includes(call.command))).toBe(false);
+});
+
+test("failed single idea task preserves cards and allows another generation", async ({page})=>{
+  await readyReport(page,{appendFails:true});
+  await page.getByRole("tab",{name:"原创灵感 4"}).click();
+  await page.getByRole("button",{name:"添加 1 个灵感",exact:true}).click();
+  await expect(page.getByText(/测试生成失败，旧方案保留/)).toBeVisible();
+  await expect(page.locator(".idea-proposal")).toHaveCount(4);
+  await expect(page.getByRole("button",{name:"添加 1 个灵感",exact:true})).toBeEnabled();
+});
+
+test("reader with existing report hides start analysis", async ({page})=>{
+  await mockDesktop(page);await page.goto("/");
+  await page.locator('[data-slot="card"]').first().getByRole("button",{name:"阅读",exact:true}).click();
+  await expect(page.getByRole("button",{name:"分析报告",exact:true})).toBeVisible();
+  await expect(page.getByRole("button",{name:"开始分析",exact:true})).toHaveCount(0);
+  await page.getByRole("button",{name:"分析报告",exact:true}).click();
+  await expect(page.getByRole("button",{name:"重新分析",exact:true})).toBeVisible();
+});
+
+test("idea creation submits complete brief rules outline and chapter plans", async ({page}) => {
+  await readyReport(page);
+  await page.evaluate(() => {
+    const original=(window as any).__TAURI__.core.invoke;
+    (window as any).__TAURI__.core.invoke=async (command:string,args:any)=>{
+      if(command==="list_creations") return [];
+      if(command==="create_creation") { (window as any).__SUBMITTED_CREATION__=args.input; return new Promise(()=>{}); }
+      return original(command,args);
+    };
+  });
+  await page.getByRole("tab",{name:"原创灵感 4"}).click();
+  await page.getByRole("button",{name:"以此创建作品",exact:true}).first().click();
+  await expect(page.getByRole("textbox",{name:"故事灵感",exact:true})).toHaveValue(/首次爽点兑现/);
+  await expect(page.getByRole("textbox",{name:"故事灵感",exact:true})).toHaveValue(/另一平台改写方向/);
+  await page.getByRole("button",{name:"创建作品",exact:true}).click();
+  await expect.poll(()=>page.evaluate(()=>(window as any).__SUBMITTED_CREATION__)).toBeTruthy();
+  const input=await page.evaluate(()=>(window as any).__SUBMITTED_CREATION__);
+  expect(input.starter.rules).toContain("调查行为会改变证据");
+  expect(input.starter.outline).toContain("21—30章");
+  expect(input.starter.reference).toContain("保护见证者");
+  expect(input.starter.reference).toContain("不属于新作已确认设定");
+  expect(input.starter.chapters).toHaveLength(3);
+  expect(input.starter.chapters[0].goal).toContain("是谁改写了昨天");
+  expect(input.starter.chapters[0].outcome).toContain("失去同伴信任");
 });

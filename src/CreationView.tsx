@@ -20,7 +20,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 
 import { countText } from "./lib/word-count";
 
-import { createCreation, deleteCreation, getCreation, listCreations, type CreationProject, type CreationSummary } from "./lib/creation";
+import { createCreation, deleteCreation, getCreation, listCreations, type CreationProject, type CreationSummary, type CreationStarter } from "./lib/creation";
 import type { BookSummary, ModelConfig } from "./types";
 
 export type CreationSeed = {
@@ -28,6 +28,7 @@ export type CreationSeed = {
   genre: string;
   audience: string;
   seed: string;
+  starter?: CreationStarter;
 };
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
 const date = (s: string) =>
@@ -287,6 +288,7 @@ function NewCreationDialog({
           genre,
           audience,
           seed: idea,
+          starter: seed?.starter,
           content: content || undefined,
           importKind,
           sourceName: fileName || undefined,
@@ -310,7 +312,7 @@ function NewCreationDialog({
         <DialogHeader>
           <DialogTitle>新建作品</DialogTitle>
           <DialogDescription>
-            先给作品起个名字。故事想法与章节安排在工作区继续完善。
+            {seed?.starter ? "完整灵感会填入故事简案、规则、大纲与前三章计划，原始方案另存为参考资料。创建后可逐项修改。" : "先给作品起个名字。故事想法与章节安排在工作区继续完善。"}
           </DialogDescription>
         </DialogHeader>
         <FieldGroup>
@@ -329,7 +331,7 @@ function NewCreationDialog({
             <FieldLabel htmlFor="creation-seed">故事灵感</FieldLabel>
             <Textarea
               id="creation-seed"
-              rows={4}
+              rows={10}
               value={idea}
               onChange={(e) => setIdea(e.target.value)}
               placeholder="一个人物、一条规则，或一段想写的情节…"

@@ -10,6 +10,7 @@ use uuid::Uuid;
 
 mod legado;
 mod ideas;
+mod idea_job;
 mod reading;
 mod completeness;
 mod creation;
@@ -649,23 +650,23 @@ fn merge_report(target: &mut Value, module: Value) {
     }
 }
 
-async fn generate_ideas(config: &ModelConfig, title: &str, summaries: &[Value]) -> Result<Value, String> {
+async fn generate_ideas(config: &ModelConfig, title: &str, summaries: &[Value], existing: &[Value], platforms: &[&str]) -> Result<Value, String> {
     let system = format!("{}\n你是原创网文选题编辑。原作资料仅作依据，创作部分必须是新的虚构故事。输出严格JSON。",reading::METHODS);
-    let prompt = ideas::prompt(title, summaries);
+    let prompt = ideas::prompt(title, summaries, existing, platforms);
     let candidates = call_deepseek(config, json!([
         {"role": "system", "content": system},
         {"role": "user", "content": prompt}
-    ]), 24_000).await?;
+    ]), 48_000).await?;
     let mut review_messages = json!([
         {"role": "system", "content": system},
         {"role": "user", "content": prompt},
         {"role": "assistant", "content": candidates.to_string()},
-        {"role": "user", "content": "现在进行第二轮编辑审稿。逐案对照原作和其他候选，淘汰换名换皮、只堆设定、靠旁人失智、开篇不兑现、无法持续的方案；直接重写不合格内容。检查起点和番茄各两案，三项不同维度的实质差异，三章开篇与前30章的三个阶段。保留合格创意，但不能只在风险栏承认缺陷。返回完整最终JSON，仅含ideasVersion和ideas；不要输出审稿过程或声称经过读者实测。"}
+        {"role": "user", "content": "现在进行第二轮编辑审稿。逐案对照原作、已有方案和其他候选，淘汰换名换皮、只堆设定、靠旁人失智、开篇不兑现、无法持续的方案；直接重写不合格内容。检查本批指定的每个平台各五案，三项不同维度的实质差异，三章开篇与前30章的三个阶段。保留合格创意，但不能只在风险栏承认缺陷。返回完整最终JSON，仅含ideasVersion和ideas；不要输出审稿过程或声称经过读者实测。"}
     ]);
     let mut last_error = String::new();
     for attempt in 0..3 {
-        let result = call_deepseek(config, review_messages.clone(), 24_000).await?;
-        match ideas::validate(&result) {
+        let result = call_deepseek(config, review_messages.clone(), 48_000).await?;
+        match ideas::validate_batch(&result, platforms).and_then(|_| ideas::ensure_distinct(existing, result["ideas"].as_array().unwrap())) {
             Ok(()) => return Ok(json!({"ideasVersion": 2, "ideas": result["ideas"]})),
             Err(error) => {
                 last_error = error;
@@ -756,10 +757,8 @@ async fn synthesis_notes(app:&AppHandle,id:&str,config:&ModelConfig,mut notes:Ve
 async fn run_analysis(app: AppHandle, id: String, config: ModelConfig) -> Result<(), String> {
     let (title, content) = {
         let conn = open_book(&app, &id)?;
-        conn.query_row("SELECT title,content FROM book LIMIT 1", [], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })
-        .map_err(|e| e.to_string())?
+        let title = conn.query_row("SELECT title FROM book LIMIT 1", [], |row| row.get::<_,String>(0)).map_err(|e|e.to_string())?;
+        (title, completeness::local_content(&conn)?)
     };
     let mut chunks = split_content(&content, 24_000);
     // Avoid a tiny final slice whose three audit zones cannot hold an 8-char quote.
@@ -895,7 +894,7 @@ async fn run_analysis(app: AppHandle, id: String, config: ModelConfig) -> Result
         let cached = cached.filter(|value| *module_name != ideas::MODULE || ideas::validate(value).is_ok());
         let module = if let Some(value)=cached { value } else {
             let value = if *module_name == ideas::MODULE {
-                generate_ideas(&config, &title, &summaries).await?
+                generate_ideas(&config, &title, &summaries, &[], ideas::PLATFORMS).await?
             } else { call_deepseek(&config,json!([
                 {"role":"system","content":"你是服务于小说作者的资深拆书编辑。结论必须可验证，不得编造。输出严格 JSON。"},
                 {"role":"user","content":final_module_prompt(&title,&summaries,module_name,schema)}
@@ -923,15 +922,14 @@ async fn run_analysis(app: AppHandle, id: String, config: ModelConfig) -> Result
 }
 
 #[tauri::command]
-async fn start_analysis(app: AppHandle, id: String, config: ModelConfig, _allow_partial: Option<bool>) -> Result<(), String> {
+async fn start_analysis(app: AppHandle, id: String, config: ModelConfig, allow_partial: Option<bool>) -> Result<(), String> {
     let operation=completeness::BookOperation::acquire(&id)?;
     let book = read_book(&app, &id)?;
     if book.status == "analyzing" {
         return Err("该书正在分析".into());
     }
-    if book.source_type=="legado" && book.content_status!="complete" {
-        return Err("书源正文尚未完整下载到本地，请先下载目录全部章节再分析".into());
-    }
+    completeness::allow_analysis(&book.source_type, &book.content_status,
+        &completeness::local_content(&open_book(&app, &id)?)?, allow_partial.unwrap_or(false))?;
     // A failed run resumes its completed work. An explicit rerun of a finished
     // report regenerates the synthesis and modules instead.
     if book.status == "completed" {
@@ -1058,6 +1056,9 @@ pub fn run() {
             delete_book,
             test_model,
             start_analysis,
+            idea_job::start_idea_job,
+            idea_job::get_idea_job,
+            idea_job::control_idea_job,
             extract_public_page,
             sync_legado_sources,
             get_legado_source_status,

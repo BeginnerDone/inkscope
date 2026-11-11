@@ -54,11 +54,50 @@ pub struct NewProject {
     genre: String,
     audience: String,
     seed: String,
+    starter: Option<CreationStarter>,
     content: Option<String>,
     book_id: Option<String>,
     import_kind: Option<String>,
     source_name: Option<String>,
 }
+#[derive(Debug, Deserialize)]
+pub struct CreationStarter {
+    rules: String,
+    outline: String,
+    reference: String,
+    chapters: Vec<StarterChapter>,
+}
+#[derive(Debug, Deserialize)]
+pub struct StarterChapter {
+    title: String,
+    goal: String,
+    outcome: String,
+}
+
+fn apply_starter(documents: &mut Vec<Document>, starter: &CreationStarter, volume_id: &str, plan_chapters: bool) {
+    for (kind, content) in [("rules", &starter.rules), ("outline", &starter.outline)] {
+        if let Some(doc) = documents.iter_mut().find(|doc| doc.kind == kind) {
+            doc.content = content.clone();
+        }
+    }
+    if !starter.reference.trim().is_empty() {
+        let mut reference = document("resource", "原创灵感原始方案", starter.reference.clone(), "");
+        reference.details.insert("category".into(), "reference".into());
+        reference.details.insert("status".into(), "待确认".into());
+        reference.details.insert("source".into(), "原创灵感；原作内容仅供对照，不属于新作事实".into());
+        documents.push(reference);
+    }
+    if plan_chapters && !starter.chapters.is_empty() {
+        documents.retain(|doc| doc.kind != "chapter");
+        for plan in &starter.chapters {
+            let mut chapter = document("chapter", &plan.title, String::new(), volume_id);
+            chapter.goal = plan.goal.clone();
+            chapter.details.insert("outcome".into(), plan.outcome.clone());
+            documents.push(chapter);
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Task {
@@ -524,6 +563,7 @@ pub fn create_creation(app: AppHandle, input: NewProject) -> Result<Project, Str
             Vec::new()
         }
     };
+    let plan_chapters = chapters.is_empty();
     if chapters.is_empty() {
         for i in 1..=1 {
             documents.push(document(
@@ -537,6 +577,9 @@ pub fn create_creation(app: AppHandle, input: NewProject) -> Result<Project, Str
         for (title, body) in chapters {
             documents.push(document("chapter", &title, body, &volume.id));
         }
+    }
+    if let Some(starter) = &input.starter {
+        apply_starter(&mut documents, starter, &volume.id, plan_chapters);
     }
     let p = Project {
         id: Uuid::new_v4().to_string(),
@@ -1808,5 +1851,28 @@ mod tests {
             .unwrap()
             .content = "前章已经改写".into();
         assert!(!context(&p, &next, "").0.contains("已发生的约定"));
+    }
+}
+
+#[cfg(test)]
+mod inspiration_tests {
+    use super::*;
+    #[test]
+    fn starter_populates_plans_without_inventing_prose_or_overwriting_imports() {
+        let starter = CreationStarter { rules:"新作规则".into(), outline:"三十章规划".into(), reference:"含原作对照的完整方案".into(), chapters: vec![StarterChapter{title:"第一章".into(),goal:"救人并留下追问".into(),outcome:"获得信任".into()}] };
+        let original = vec![document("brief","简案","作者修改后的想法".into(),""),document("rules","规则",String::new(),""),document("outline","大纲",String::new(),""),document("chapter","正文","已有稿件".into(),"v")];
+        let mut docs=original.clone();
+        apply_starter(&mut docs,&starter,"v",true);
+        assert_eq!(docs[0].content,"作者修改后的想法");
+        assert_eq!(docs[1].content,"新作规则");
+        assert_eq!(docs[2].content,"三十章规划");
+        let chapter=docs.iter().find(|d|d.kind=="chapter").unwrap();
+        assert!(chapter.content.is_empty());
+        assert_eq!(chapter.goal,"救人并留下追问");
+        assert_eq!(chapter.details["outcome"],"获得信任");
+        assert_eq!(docs.iter().find(|d|d.kind=="resource").unwrap().details["status"],"待确认");
+        let mut docs=original;
+        apply_starter(&mut docs,&starter,"v",false);
+        assert_eq!(docs.iter().find(|d|d.kind=="chapter").unwrap().content,"已有稿件");
     }
 }
