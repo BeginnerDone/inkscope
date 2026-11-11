@@ -1,6 +1,6 @@
 [package]
 name = "inkscope"
-version = "0.2.3"
+version = "0.2.4"
 description = "Local novel reading, inspiration and writing workspace"
 authors = ["InkScope"]
 edition = "2021"
