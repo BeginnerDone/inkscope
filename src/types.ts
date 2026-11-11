@@ -289,7 +289,7 @@ export type BookSummary = {
   characterCount: number;
   createdAt: string;
   updatedAt: string;
-  status: "ready" | "analyzing" | "completed" | "failed";
+  status: "ready" | "analyzing" | "completed" | "failed" | "paused";
   stage: string;
   completed: number;
   total: number;

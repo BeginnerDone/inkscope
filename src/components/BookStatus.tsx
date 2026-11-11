@@ -8,6 +8,7 @@ export function BookStatus({ status }: { status: BookSummary["status"] }) {
     analyzing: "分析中",
     completed: "已完成",
     failed: "已中断",
+    paused: "已暂停",
   };
   return (
     <Badge variant={status === "failed" ? "destructive" : "secondary"}>

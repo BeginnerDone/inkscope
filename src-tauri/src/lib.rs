@@ -11,6 +11,7 @@ use uuid::Uuid;
 mod legado;
 mod ideas;
 mod idea_job;
+mod analysis_job;
 mod reading;
 mod completeness;
 mod creation;
@@ -329,7 +330,7 @@ fn recover_interrupted_jobs(app: &AppHandle) -> Result<(), String> {
         let conn = Connection::open(path).map_err(|e| e.to_string())?;
         conn.execute(
             "UPDATE analysis_job SET status='failed',stage='分析被客户端重启中断',
-             error='上次分析未正常结束，可以直接重新分析。原文与已抓取章节仍保留。',updated_at=?
+             error='上次分析未正常结束，可以继续分析。原文与已完成的分析进度仍保留。',updated_at=?
              WHERE status='analyzing'",
             params![now()],
         ).map_err(|e| e.to_string())?;
@@ -846,7 +847,7 @@ async fn run_analysis(app: AppHandle, id: String, config: ModelConfig) -> Result
             }
         }
         let result=result.ok_or_else(||format!(
-            "片段 {} 的模型结果未通过原文引用校验（{}），并非小说文件读取失败。已保存此前完成的片段；重新分析会从此处继续。",
+            "片段 {} 的模型结果未通过原文引用校验（{}），并非小说文件读取失败。已保存此前完成的片段；继续分析会重试此处。",
             index+1, validation_error
         ))?;
         regenerated_notes=true;
@@ -923,6 +924,7 @@ async fn run_analysis(app: AppHandle, id: String, config: ModelConfig) -> Result
 
 #[tauri::command]
 async fn start_analysis(app: AppHandle, id: String, config: ModelConfig, allow_partial: Option<bool>) -> Result<(), String> {
+    if config.api_key.trim().is_empty() { return Err("请先配置模型".into()); }
     let operation=completeness::BookOperation::acquire(&id)?;
     let book = read_book(&app, &id)?;
     if book.status == "analyzing" {
@@ -939,14 +941,10 @@ async fn start_analysis(app: AppHandle, id: String, config: ModelConfig, allow_p
         conn.execute("UPDATE chunks SET summary_json=NULL,summary_version=0 WHERE summary_json LIKE '%\"verificationStatus\":\"partial\"%'",[]).map_err(|e|e.to_string())?;
     }
     begin_job(&app, &id)?;
-    let worker_app = app.clone();
-    let worker_id = id.clone();
-    tauri::async_runtime::spawn(async move {
-        let _operation=operation;
-        if let Err(error) = run_analysis(worker_app.clone(), worker_id.clone(), config).await {
-            let _ = fail_job(&worker_app,&worker_id,&error);
-        }
-    });
+    if let Err(error) = analysis_job::launch(app.clone(), id.clone(), config, operation) {
+        let _ = fail_job(&app, &id, &error);
+        return Err(error);
+    }
     Ok(())
 }
 
@@ -1056,6 +1054,7 @@ pub fn run() {
             delete_book,
             test_model,
             start_analysis,
+            analysis_job::pause_analysis,
             idea_job::start_idea_job,
             idea_job::get_idea_job,
             idea_job::control_idea_job,

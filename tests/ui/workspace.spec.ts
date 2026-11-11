@@ -20,6 +20,8 @@ async function mockDesktop(
     resumePosition?: number;
     downloadFails?: boolean;
     holdDownloadProgress?: boolean;
+    analysisStatus?: "analyzing" | "failed" | "paused";
+    pauseFails?: boolean;
   } = {},
 ) {
   await page.addInitScript(
@@ -35,6 +37,8 @@ async function mockDesktop(
       holdDownloadProgress,
       preparationMode,
       appendFails,
+      analysisStatus,
+      pauseFails,
     }) => {
       const report = {
         overallScore: 82,
@@ -167,6 +171,8 @@ async function mockDesktop(
         }),
       );
       let ideaJob: any = null;
+      if (analysisStatus && books[0]) Object.assign(books[0], {status:analysisStatus,report:null,stage:analysisStatus === "analyzing" ? "分析原文片段 3/12" : "分析已中断",completed:2,total:18,error:analysisStatus === "failed" ? "模型请求超时，已保存此前完成片段" : null});
+      if (analysisStatus) localStorage.setItem('inkscope-model',JSON.stringify({apiKey:'ui-test-only-key',model:'deepseek-v4-flash',baseUrl:'https://example.invalid'}));
       let jobTicks = 0;
       const state = { calls: [] as { command: string; args: any }[] };
       const progressListeners = new Set<(event: any) => void>();
@@ -197,6 +203,7 @@ async function mockDesktop(
         updatedAt: string;
       }> = [];
       (window as any).__UI_TEST__ = state;
+      (window as any).__ANALYSIS_BOOKS__ = books;
       (window as any).__TAURI__ = {
         event: {
           listen: async (_name: string, listener: (event: any) => void) => {
@@ -468,6 +475,12 @@ async function mockDesktop(
               book.status = "analyzing";
               book.stage = "准备原文切片";
               return;
+            }
+            if (command === "pause_analysis") {
+              if (pauseFails) throw new Error("暂停请求失败，请重试");
+              const book = books.find(item => item.id === args.id)!;
+              Object.assign(book,{status:"paused",stage:"已暂停，已完成进度保留",error:null});
+              return {...book};
             }
             if (command === "export_book") return "/tmp/ui-test.txt";
             if (command === "test_model") return true;
@@ -1614,4 +1627,78 @@ test("idea creation submits complete brief rules outline and chapter plans", asy
   expect(input.starter.chapters).toHaveLength(3);
   expect(input.starter.chapters[0].goal).toContain("是谁改写了昨天");
   expect(input.starter.chapters[0].outcome).toContain("失去同伴信任");
+});
+
+for (const status of ['failed','paused'] as const) {
+  test(`${status} analysis continues directly from the shelf and reader without preparation or download`, async({page})=>{
+    await mockDesktop(page,{analysisStatus:status,preparationMode:'legacy-offline'});
+    await page.goto('/');
+    const card=page.locator('[data-slot="card"]').first();
+    await expect(card.getByRole('button',{name:'继续分析',exact:true})).toBeEnabled();
+    await card.getByRole('button',{name:'阅读',exact:true}).click();
+    await expect(page.getByRole('button',{name:'继续分析',exact:true})).toBeVisible();
+    await expect(page.getByRole('button',{name:'开始分析',exact:true})).toHaveCount(0);
+    await page.getByRole('button',{name:'继续分析',exact:true}).click();
+    await expect(page.getByRole('button',{name:'暂停分析',exact:true})).toBeVisible();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    await page.getByRole('button',{name:'暂停分析',exact:true}).click();
+    await expect(page.getByRole('heading',{name:'分析已暂停'})).toBeVisible();
+    await expect(page.locator('.job-facts')).toContainText('2 / 18');
+    await page.getByRole('button',{name:'返回书库',exact:true}).click();
+    await card.getByRole('button',{name:'继续分析',exact:true}).click();
+    await expect(page.getByRole('button',{name:'暂停分析',exact:true})).toBeVisible();
+    const calls=await page.evaluate(()=>(window as any).__UI_TEST__.calls);
+    expect(calls.filter((c:any)=>c.command==='start_analysis')).toHaveLength(2);
+    expect(calls.filter((c:any)=>c.command==='start_analysis').every((c:any)=>c.args.allowPartial===true)).toBe(true);
+    expect(calls.some((c:any)=>['prepare_analysis','refresh_legado_book'].includes(c.command))).toBe(false);
+  });
+}
+
+test('running analysis has an enabled progress entry on shelf and reader and can pause and continue',async({page})=>{
+  await mockDesktop(page,{analysisStatus:'analyzing'}); await page.goto('/');
+  const card=page.locator('[data-slot="card"]').first();
+  await expect(card.getByRole('button',{name:'查看进度',exact:true})).toBeEnabled();
+  await card.getByRole('button',{name:'查看进度',exact:true}).click();
+  await expect(page.getByRole('button',{name:'暂停分析',exact:true})).toBeVisible();
+  await page.getByRole('button',{name:'返回书库（后台继续）',exact:true}).click();
+  await page.evaluate(()=>Object.assign((window as any).__ANALYSIS_BOOKS__[0],{completed:4,stage:'分析原文片段 5/12'}));
+  await expect(card).toContainText('分析原文片段 5/12');
+  await expect(page.getByRole('heading',{name:'我的书架',exact:true})).toBeVisible();
+  await card.getByRole('button',{name:'阅读',exact:true}).click();
+  await page.getByRole('button',{name:'查看分析进度',exact:true}).click();
+  await expect(page.locator('.job-facts')).toContainText('4 / 18');
+  await page.getByRole('button',{name:'暂停分析',exact:true}).click();
+  await expect(page.getByRole('heading',{name:'分析已暂停'})).toBeVisible();
+  await page.screenshot({path:'test-results/analysis-paused.png'});
+  await page.getByRole('button',{name:'继续分析',exact:true}).click();
+  await expect(page.getByRole('button',{name:'暂停分析',exact:true})).toBeVisible();
+  const calls=await page.evaluate(()=>(window as any).__UI_TEST__.calls);
+  expect(calls.filter((c:any)=>c.command==='start_analysis')).toHaveLength(1);
+  expect(calls.some((c:any)=>['prepare_analysis','refresh_legado_book'].includes(c.command))).toBe(false);
+});
+
+test('pause errors stay visible and a running task with an older report still opens progress',async({page})=>{
+  await mockDesktop(page,{analysisStatus:'analyzing',pauseFails:true});await page.goto('/');
+  await page.evaluate(()=>{(window as any).__ANALYSIS_BOOKS__[0].report={summary:'上一份报告'};});
+  await page.locator('[data-slot="card"]').first().getByRole('button',{name:'查看进度',exact:true}).click();
+  await page.getByRole('button',{name:'暂停分析',exact:true}).click();
+  await expect(page.getByRole('alert')).toContainText('暂停请求失败');
+  await expect(page.getByRole('button',{name:'暂停分析',exact:true})).toBeEnabled();
+  await expect(page.getByRole('button',{name:'继续分析',exact:true})).toHaveCount(0);
+});
+
+test('analysis failure shows continue and background completion leaves the user on the shelf',async({page})=>{
+  await mockDesktop(page,{analysisStatus:'analyzing'});await page.goto('/');
+  const card=page.locator('[data-slot="card"]').first();
+  await card.getByRole('button',{name:'查看进度',exact:true}).click();
+  await page.evaluate(()=>Object.assign((window as any).__ANALYSIS_BOOKS__[0],{status:'failed',error:'测试网络错误'}));
+  await expect(page.getByRole('heading',{name:'分析已中断'})).toBeVisible();
+  await expect(page.getByRole('button',{name:'重新分析',exact:true})).toHaveCount(0);
+  await page.getByRole('button',{name:'继续分析',exact:true}).click();
+  await expect(page.getByRole('button',{name:'暂停分析',exact:true})).toBeVisible();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await page.getByRole('button',{name:'返回书库（后台继续）',exact:true}).click();
+  await page.evaluate(()=>Object.assign((window as any).__ANALYSIS_BOOKS__[0],{status:'completed',report:{summary:'分析已完成'},stage:'分析完成'}));
+  await expect(card.getByRole('button',{name:'报告',exact:true})).toBeVisible();
+  await expect(page.getByRole('heading',{name:'我的书架',exact:true})).toBeVisible();
 });

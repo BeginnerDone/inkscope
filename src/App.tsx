@@ -29,6 +29,8 @@ import {
   LoaderCircle,
   Network,
   Plus,
+  Pause,
+  Play,
   X,
   Zap,
 } from "lucide-react";
@@ -36,6 +38,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type CSSProperties,
 } from "react";
@@ -55,6 +58,7 @@ import {
   isTauri,
   listBooks,
   startAnalysis,
+  pauseAnalysis,
 } from "./lib/tauri";
 import type {
   AnalysisReport,
@@ -216,6 +220,7 @@ function App() {
   const [config, setConfig] = useState<ModelConfig>(readConfig);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const analysisEpoch = useRef(0);
 
   const refreshBooks = useCallback(async (query = "") => {
     try {
@@ -234,28 +239,47 @@ function App() {
   }, [refreshBooks]);
 
   useEffect(() => {
-    if (!selected || selected.status !== "analyzing") return;
+    if (!selected || selected.status !== "analyzing" || view === "home") return;
+    let active = true;
     const timer = window.setInterval(async () => {
+      const epoch = analysisEpoch.current;
       try {
         const current = await getBook(selected.id);
+        if (!active || epoch !== analysisEpoch.current) return;
         setSelected(current);
         setBooks((items) =>
           items.map((item) => (item.id === current.id ? current : item)),
         );
-        if (current.status === "completed") setView("report");
+        if (current.status === "completed") setView(v => v === "analyzing" ? "report" : v);
       } catch (e) {
-        setError(errorText(e));
+        if (active) setError(errorText(e));
       }
     }, 1400);
-    return () => window.clearInterval(timer);
-  }, [selected]);
+    return () => { active = false; window.clearInterval(timer); };
+  }, [selected?.id, selected?.status, view]);
+
+  const hasRunningAnalysis = books.some(book => book.status === "analyzing");
+  useEffect(() => {
+    if (view !== "home" || !hasRunningAnalysis) return;
+    let active = true;
+    const refresh = async () => {
+      try {
+        const current = await listBooks();
+        if (!active) return;
+        setBooks(current);
+        setSelected(book => book ? current.find(item => item.id === book.id) || book : book);
+      } catch (e) { if (active) setError(errorText(e)); }
+    };
+    const timer = window.setInterval(() => void refresh(), 1400);
+    return () => { active = false; window.clearInterval(timer); };
+  }, [view, hasRunningAnalysis]);
 
   const openBook = async (book: BookSummary) => {
     try {
       const current = await getBook(book.id);
       setSelected(current);
       setView(
-        current.status === "analyzing" || current.status === "failed"
+        ["analyzing", "failed", "paused"].includes(current.status)
           ? "analyzing"
           : current.report
             ? "report"
@@ -310,13 +334,26 @@ function App() {
   const [analysisTarget, setAnalysisTarget] = useState<BookSummary | null>(
     null,
   );
+  const analysisStarting = useRef(false);
   const runBook = async (book: BookSummary) => {
-    if (!config.apiKey.trim()) {
-      setSelected(book);
-      setSettingsOpen(true);
-      return;
+    if (analysisStarting.current) return;
+    analysisStarting.current = true;
+    try {
+      const current = await getBook(book.id);
+      if (current.status === "analyzing") {
+        setSelected(current); setView("analyzing"); return;
+      }
+      if (!config.apiKey.trim()) {
+        setSelected(current); setSettingsOpen(true); return;
+      }
+      if (["failed", "paused"].includes(current.status)) {
+        await startPreparedBook(current, true);
+      } else setAnalysisTarget(current);
+    } catch (e) {
+      setError(errorText(e)); toast.error(errorText(e));
+    } finally {
+      analysisStarting.current = false;
     }
-    setAnalysisTarget(book);
   };
   const startPreparedBook = async (
     book: BookSummary,
@@ -514,7 +551,17 @@ function App() {
             <AnalyzingView
               book={selected}
               onHome={() => setView("home")}
-              onRetry={() => void runBook(selected)}
+              onRetry={() => runBook(selected)}
+              onPause={async () => {
+                analysisEpoch.current++;
+                try {
+                  const current = await pauseAnalysis(selected.id);
+                  analysisEpoch.current++;
+                  setSelected(current);
+                  setBooks(items => items.map(book => book.id === current.id ? current : book));
+                  if (current.status === "completed" && current.report) setView("report");
+                } finally { analysisEpoch.current++; }
+              }}
             />
           )}
           {view === "report" && selected?.report && (
@@ -569,11 +616,17 @@ function AnalyzingView({
   book,
   onHome,
   onRetry,
+  onPause,
 }: {
   book: BookSummary;
   onHome: () => void;
-  onRetry: () => void;
+  onRetry: () => Promise<void>;
+  onPause: () => Promise<void>;
 }) {
+  const [pausing, setPausing] = useState(false);
+  const [continuing, setContinuing] = useState(false);
+  const [pauseError, setPauseError] = useState("");
+  const paused = book.status === "paused";
   const [clock, setClock] = useState(Date.now());
   useEffect(() => {
     const timer = window.setInterval(() => setClock(Date.now()), 1000);
@@ -584,7 +637,7 @@ function AnalyzingView({
     : 0;
   const started = book.jobStartedAt ? new Date(book.jobStartedAt).getTime() : 0;
   const updated = book.jobUpdatedAt ? new Date(book.jobUpdatedAt).getTime() : 0;
-  const elapsed = started ? Math.max(0, clock - started) : 0;
+  const elapsed = started ? Math.max(0, (book.status === "analyzing" ? clock : updated || clock) - started) : 0;
   const stale =
     book.status === "analyzing" &&
     updated > 0 &&
@@ -610,7 +663,7 @@ function AnalyzingView({
         <Database size={14} /> 分析进度
       </div>
       <h1>
-        {book.status === "failed" ? "分析已中断" : `正在分析《${book.title}》`}
+        {paused ? "分析已暂停" : book.status === "failed" ? "分析已中断" : `正在分析《${book.title}》`}
       </h1>
       <p>{book.stage}</p>
       <Progress value={progress} aria-label="分析进度" className="my-6" />
@@ -637,7 +690,7 @@ function AnalyzingView({
           <AlertCircle />
           <AlertDescription>
             超过 10
-            分钟没有新进度。当前请求可能超时或网络已中断，重启客户端后可重新分析。
+            分钟没有新进度。可以暂停当前请求，再继续分析；已完成进度会保留。
           </AlertDescription>
         </Alert>
       )}
@@ -645,15 +698,24 @@ function AnalyzingView({
         <Alert variant="destructive" className="mt-4 text-left">
           <AlertCircle />
           <AlertDescription>
-            {book.error || "分析中断，请重试。"}
+            {book.error || "分析中断，已完成进度保留，可继续分析。"}
           </AlertDescription>
         </Alert>
       )}
+      {paused && <p className="text-sm text-muted-foreground">已停止当前请求，保留已完成的片段与报告模块。继续时重试尚未完成的部分。</p>}
+      {pauseError && <Alert variant="destructive" className="mt-4 text-left"><AlertDescription>{pauseError}</AlertDescription></Alert>}
       <div className="analysis-actions">
-        {book.status === "failed" && (
-          <Button onClick={onRetry}>
-            <BrainCircuit size={17} />
-            重新分析
+        {book.status === "analyzing" && <Button variant="outline" disabled={pausing} onClick={async () => {
+          setPausing(true); setPauseError("");
+          try { await onPause(); } catch (e) { setPauseError(errorText(e)); } finally { setPausing(false); }
+        }}>{pausing ? <LoaderCircle className="animate-spin" data-icon="inline-start" /> : <Pause data-icon="inline-start" />}{pausing ? "正在暂停…" : "暂停分析"}</Button>}
+        {["failed", "paused"].includes(book.status) && (
+          <Button disabled={continuing} onClick={async () => {
+            setContinuing(true); setPauseError("");
+            try { await onRetry(); } finally { setContinuing(false); }
+          }}>
+            {continuing ? <LoaderCircle className="animate-spin" data-icon="inline-start" /> : <Play size={17} />}
+            {continuing ? "正在继续…" : "继续分析"}
           </Button>
         )}
         <Button variant="outline" onClick={onHome}>

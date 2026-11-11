@@ -69,6 +69,7 @@ export const startAnalysis = (
   config: ModelConfig,
   allowPartial = false,
 ) => invoke<void>("start_analysis", { id, config, allowPartial });
+export const pauseAnalysis = (id: string) => invoke<BookSummary>("pause_analysis", { id });
 export type IdeaJob = { id: string; bookId: string; platform: string; status: "running" | "paused" | "completed" | "cancelled" | "failed"; completed: number; message: string; updatedAt: string };
 export const startIdeaJob = (id: string, config: ModelConfig, platform: "起点" | "番茄") => invoke<IdeaJob>("start_idea_job", { id, config, platform });
 export const getIdeaJob = (id: string) => invoke<IdeaJob | null>("get_idea_job", { id });

@@ -184,7 +184,9 @@ export function HomeView({
                   <BookOpen data-icon="inline-start" />
                   {book.readingChapterPosition != null ? "继续阅读" : "阅读"}
                 </Button>
-                {book.report ? (
+                {book.status === "analyzing" ? (
+                  <Button variant="ghost" size="sm" onClick={() => onReport(book)}><BarChart3 data-icon="inline-start" />查看进度</Button>
+                ) : book.report && !["failed", "paused"].includes(book.status) ? (
                   <Button
                     variant="ghost"
                     size="sm"
@@ -198,10 +200,9 @@ export function HomeView({
                     variant="ghost"
                     size="sm"
                     onClick={() => onAnalyze(book)}
-                    disabled={book.status === "analyzing"}
                   >
                     <BrainCircuit data-icon="inline-start" />
-                    {book.status === "failed" ? "继续分析" : "分析"}
+                    {["failed", "paused"].includes(book.status) ? "继续分析" : "分析"}
                   </Button>
                 )}
                 <Button

@@ -811,17 +811,17 @@ export function ReaderView({
                 分析报告
               </Button>
             )}
-            {!book.report && (
+            {(!book.report || ["analyzing", "failed", "paused"].includes(book.status)) && (
             <Button
               size="sm"
               variant="ghost"
-              disabled={book.status === "analyzing" || !chapters.length}
+              disabled={!chapters.length}
               onClick={onAnalyze}
             >
               <BrainCircuit />
               {book.status === "analyzing"
-                ? "分析中"
-                : book.status === "failed"
+                ? "查看分析进度"
+                : ["failed", "paused"].includes(book.status)
                   ? "继续分析"
                   : "开始分析"}
             </Button>
