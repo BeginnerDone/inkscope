@@ -7,6 +7,8 @@ async function creationDesktop(
     failedTask?: boolean;
     recovered?: boolean;
     deleteBlocked?: boolean;
+    manyVolumes?: boolean;
+    largeManuscript?: boolean;
   } = {},
 ) {
   await page.addInitScript((options) => {
@@ -56,6 +58,16 @@ async function creationDesktop(
       volumes: [{ id: "v1", title: "第一卷" }],
       guidance: {},
     };
+    if (options.manyVolumes) {
+      project.volumes.push({id:"v2",title:"第二卷"},{id:"v3",title:"第三卷"});
+      for (let i=4;i<=45;i++) project.documents.push({id:`extra-${i}`,kind:"chapter",title:`第${i}章`,content:"",goal:"",volumeId:"v1",details:{}});
+      project.documents.push({id:"second-volume-chapter",kind:"chapter",title:"另一卷的开端",content:"另卷正文",goal:"",volumeId:"v2",details:{}});
+    }
+    if (options.largeManuscript) {
+      const content = "夜色落在窗沿，记录员推开旧档案室的门。\n".repeat(105);
+      project.documents.find((d: any) => d.id === "doc-6").content = content;
+      for (let i=4;i<=2000;i++) project.documents.push({id:`long-${i}`,kind:"chapter",title:`第${i}章`,content,goal:"",volumeId:"v1",details:{}});
+    }
     let tasks: any[] = [];
     const cycles: Record<string, any> = {};
     const cycle = (id: string) => cycles[id] ||= { review: null, activeFinalization: null, finalizations: [], recordTaskIds: [] };
@@ -506,7 +518,6 @@ test("resources remain separately manageable and link to chapter preparation", a
   await page.getByRole("checkbox",{name:"铜镜的裂纹 待确认",exact:true}).check();
   await expect.poll(()=>page.evaluate(()=>(window as any).__CREATION_TEST__.project.documents[6].details?.relatedIds)).toMatch(/.+/);
   await page.getByRole("tab",{name:"资料库",exact:true}).click();
-  await page.getByText("导入管理",{exact:true}).click();
   await page.getByRole("button",{name:"纠正导入用途"}).click();
   await page.getByRole("dialog").getByText("第2章",{exact:true}).click();
   await page.getByRole("button",{name:"转换 1 条"}).click();
@@ -709,12 +720,127 @@ test('writer respects reduced motion and keeps navigation beside the manuscript'
 
 test('writer volume descriptions persist and tools show one dedicated function', async({page})=>{
  await creationDesktop(page);await openWriter(page);
- await page.getByRole('button',{name:'第一卷',exact:true}).click();
+ await page.getByRole('button',{name:'设置第一卷',exact:true}).click();
  await page.getByLabel('卷描述',{exact:true}).fill('进入失落的旧城。');await page.getByLabel('本卷目标',{exact:true}).fill('找出铜镜的主人。');
  await page.getByRole('button',{name:'保存名称',exact:true}).click();await expect(page.locator('.writer-volume-goal')).toContainText('找出铜镜的主人。');
- await page.getByRole('button',{name:'第一卷',exact:true}).click();await expect(page.getByLabel('卷描述',{exact:true})).toHaveValue('进入失落的旧城。');await page.getByRole('button',{name:'关闭',exact:true}).click();
+ await page.getByRole('button',{name:'设置第一卷',exact:true}).click();await expect(page.getByLabel('卷描述',{exact:true})).toHaveValue('进入失落的旧城。');await page.getByRole('button',{name:'关闭',exact:true}).click();
  await page.getByRole('button',{name:'工具',exact:true}).click();await expect(page.getByLabel('指定姓氏')).toBeVisible();
  await page.getByRole('tab',{name:'章节审核',exact:true}).click();await expect(page.getByLabel('指定姓氏')).toHaveCount(0);await expect(page.getByRole('button',{name:'审核所选章节'})).toBeVisible();
  await page.getByRole('tab',{name:'文字润色',exact:true}).click();await expect(page.getByRole('button',{name:'审核所选章节'})).toHaveCount(0);await expect(page.getByRole('button',{name:'润色当前章'})).toBeVisible();
  await page.getByRole('button',{name:'关闭',exact:true}).click();await page.getByRole('button',{name:'工具',exact:true}).click();await page.getByLabel('指定姓氏').fill('林');await page.getByRole('button',{name:'生成十个名字'}).click();await expect(page.getByRole('button',{name:'复制',exact:true})).toHaveCount(10);await page.screenshot({animations:'disabled',path:'test-results/writer-names.png'});
 });
+
+
+test("writing workspace aligns directory and fixed toolbar at desktop and minimum width",async({page})=>{
+  await creationDesktop(page);await openWorkspace(page);
+  for(const width of [1280,980]) {
+    await page.setViewportSize({width,height:760});
+    const directory=page.getByRole('navigation',{name:'分卷与章节',exact:true});
+    const header=page.locator('.workbench-chapter-header');
+    const dh=await directory.locator('header').boundingBox();const eh=await header.boundingBox();
+    expect(Math.abs(dh!.y-eh!.y)).toBeLessThan(2);expect(dh!.height).toBeLessThanOrEqual(36);
+    await expect(directory.locator('[aria-current=page]')).toHaveCount(1);
+    const tools=page.locator('.workbench-chapter-tools');
+    await expect(tools.getByRole('button',{name:'续写本章',exact:true})).toBeVisible();
+    await expect(page.locator('.workbench-draft').getByRole('button',{name:'续写本章',exact:true})).toHaveCount(0);
+    expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
+    await page.getByRole('tab',{name:'审稿',exact:true}).click();
+    await expect(tools.getByRole('button',{name:'检查本章',exact:true})).toBeVisible();
+    await page.getByRole('tab',{name:'草稿',exact:true}).click();
+    await page.getByRole('button',{name:'续写本章',exact:true}).click();
+    await expect(page.getByLabel('章节正文')).toBeVisible();
+    expect(await page.locator('.workbench-assistant').evaluate(el=>el.getBoundingClientRect().right<=innerWidth)).toBe(true);
+    await page.screenshot({path:`test-results/creation-assistant-${width}.png`});
+    await page.getByRole('button',{name:'关闭AI协作',exact:true}).click();
+  }
+});
+
+
+for (const mode of ["writer","ai"] as const) {
+  test(`${mode} collapses volumes, remembers choices and reveals newly added chapters`,async({page})=>{
+    await creationDesktop(page,{manyVolumes:true});
+    if(mode==="writer")await openWriter(page);else await openWorkspace(page);
+    const nav=page.getByRole('navigation',{name:mode==="writer"?'写作目录':'分卷与章节',exact:true});
+    await nav.getByRole('button',{name:'折叠第一卷',exact:true}).click();
+    await expect(nav.getByRole('button',{name:'展开第一卷',exact:true})).toHaveAttribute('aria-expanded','false');
+    await expect(nav.getByRole('button',{name:'第1章',exact:true})).toHaveCount(0);
+    const second=nav.getByRole('button',{name:'展开第二卷',exact:true});
+    await expect(second).toBeInViewport();
+    await second.focus();await page.keyboard.press('Enter');
+    await expect(nav.getByRole('button',{name:'折叠第二卷',exact:true})).toHaveAttribute('aria-expanded','true');
+    await expect(nav.getByText('另一卷的开端',{exact:true})).toBeVisible();
+    await page.getByRole('button',{name:'返回作品列表',exact:true}).click();
+    await page.getByRole('button',{name:/长夜记录员 都市悬疑/}).click();
+    await expect(nav.getByRole('button',{name:'展开第一卷',exact:true})).toBeVisible();
+    await expect(nav.getByRole('button',{name:'折叠第二卷',exact:true})).toBeVisible();
+    await nav.getByRole('button',{name:mode==="writer"?'向第三卷新建章节':'向第三卷添加章节',exact:true}).click();
+    await expect(nav.getByRole('button',{name:'折叠第三卷',exact:true})).toHaveAttribute('aria-expanded','true');
+    await expect(nav.locator('[aria-current=page]')).toBeVisible();
+    if(mode==="ai") { await expect(page.getByLabel('本章目标',{exact:true})).toBeVisible(); await page.getByRole('tab',{name:'草稿',exact:true}).click(); }
+    await expect(page.getByLabel(mode==="writer"?'写作正文':'章节正文',{exact:true})).toHaveValue('');
+    await page.screenshot({path:`test-results/${mode}-volume-folding.png`});
+    expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
+  });
+}
+
+for (const mode of ["writer", "ai"] as const) {
+  test(`${mode} keeps a 2000 chapter manuscript responsive and the directory compact`, async ({page}) => {
+    await creationDesktop(page, {largeManuscript:true});
+    if(mode === "writer") await openWriter(page); else await openWorkspace(page);
+    const nav = page.getByRole('navigation', {name:mode === 'writer' ? '写作目录' : '分卷与章节', exact:true});
+    const tree = nav.locator(mode === 'writer' ? '.writer-tree' : '.creation-navigation-tree');
+    const body = page.getByLabel(mode === 'writer' ? '写作正文' : '章节正文', {exact:true});
+    await expect(nav.locator('[data-chapter-index]').first()).toBeVisible();
+    expect(await nav.locator('[data-chapter-index]').count()).toBeLessThan(50);
+    const before = await body.inputValue();
+    const header = await nav.locator('header').boundingBox();
+    const volume = await nav.locator(mode === 'writer' ? '.writer-volume' : '.creation-volume-heading').boundingBox();
+    expect(header!.height).toBeLessThanOrEqual(36);
+    expect(volume!.y - (header!.y + header!.height)).toBeLessThan(4);
+    const addVolume = await nav.locator('header button').boundingBox();
+    const addChapter = await nav.getByRole('button', {name:mode === 'writer' ? '向第一卷新建章节' : '向第一卷添加章节',exact:true}).boundingBox();
+    expect(Math.abs(addVolume!.x - addChapter!.x)).toBeLessThan(1);
+    const toggleIcon = await nav.locator('.volume-toggle svg').boundingBox();
+    const chapterIcon = await nav.locator('[data-chapter-index="0"] button svg').first().boundingBox();
+    expect(chapterIcon!.x - toggleIcon!.x).toBeGreaterThanOrEqual(16);
+    if (mode === 'writer') {
+      const add = nav.getByRole('button', {name:'向第一卷新建章节',exact:true});
+      const oldBox = await add.boundingBox();
+      await page.mouse.move(900,100);
+      await expect(nav.getByRole('button',{name:'设置第一卷',exact:true})).toHaveCSS('opacity','1');
+      await expect(nav.getByRole('button',{name:'删除分卷第一卷',exact:true})).toHaveCSS('opacity','1');
+      await add.hover();
+      expect((await add.boundingBox())!.x).toBe(oldBox!.x);
+      for (const name of ['设定','大纲','伏笔','写作辅助']) {
+        await page.getByRole('button',{name:name === '伏笔' ? /^伏笔/ : name,exact:name !== '伏笔'}).click();
+        await expect(page.getByRole('dialog')).toBeVisible();
+        await page.getByRole('button',{name:'关闭',exact:true}).click();
+        await expect(page.getByRole('dialog')).toHaveCount(0);
+      }
+    }
+    const geometry = await body.evaluate(el => ({right:el.getBoundingClientRect().right,font:getComputedStyle(el).fontSize,line:getComputedStyle(el).lineHeight}));
+    expect(1280 - geometry.right).toBeLessThanOrEqual(10);
+    expect(geometry.font).toBe('16px');
+    expect(parseFloat(geometry.line)).toBeGreaterThanOrEqual(28);
+    await page.screenshot({path:`test-results/${mode}-compact-directory-top.png`});
+    await body.evaluate((el: HTMLTextAreaElement) => { el.focus(); el.setSelectionRange(el.value.length, el.value.length); });
+    await body.pressSequentially('测试输入');
+    await expect(body).toHaveValue(before + '测试输入');
+    await page.getByRole('button',{name:'折叠第一卷',exact:true}).click();
+    await expect(nav.locator('[data-chapter-index]')).toHaveCount(0);
+    await page.getByRole('button',{name:'展开第一卷',exact:true}).click();
+    await expect(nav.locator('[data-chapter-index]').first()).toBeVisible();
+    await tree.evaluate(el => {el.scrollTop=el.scrollHeight;});
+    await expect(nav.getByText('第2000章',{exact:true})).toBeVisible();
+    expect(await nav.locator('[data-chapter-index]').count()).toBeLessThan(50);
+    await nav.locator('[data-chapter-index="1999"] button').first().focus();
+    await page.keyboard.press('Home');
+    await expect(nav.locator('[data-chapter-index="0"] button').first()).toBeFocused();
+    await page.keyboard.press('End');
+    await expect(nav.locator('[data-chapter-index="1999"] button').first()).toBeFocused();
+    await page.keyboard.press('Enter');
+    await expect(mode === 'writer' ? page.getByLabel('章节标题') : page.getByLabel('文档名称')).toHaveValue('第2000章');
+    await expect(body).toHaveValue(before);
+    await page.screenshot({path:`test-results/${mode}-compact-directory.png`});
+  });
+}

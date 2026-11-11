@@ -1,5 +1,5 @@
-import { Alert, AlertDescription } from "@/components/ui/alert";
-import { Plus, Pause, Play, X } from "lucide-react";
+import { Alert, AlertTitle, AlertDescription } from "@/components/ui/alert";
+import { Plus, Pause, Play, X, NotebookPen, CircleAlert, CheckCircle2, RotateCcw } from "lucide-react";
 import { ideaToCreationSeed } from "./lib/idea-creation";
 import { Progress } from "@/components/ui/progress";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectGroup, SelectItem } from "@/components/ui/select";
@@ -70,48 +70,46 @@ export function IdeasView({
             : "这是旧版灵感。可直接追加新版方案，保留已有内容；也可重新分析整本书。"}
         </p>
       </section>
-      <div className="flex flex-wrap items-center gap-3">
-        <ToggleGroup
-          type="single"
-          variant="outline"
-          size="sm"
-          value={platform}
-          onValueChange={(value) => {
-            if (value) setPlatform(value);
-          }}
-          aria-label="灵感平台筛选"
-        >
-          {["全部", "起点", "番茄"].map((label) => (
-            <ToggleGroupItem key={label} value={label}>
-              {label} ·{" "}
-              {label === "全部"
-                ? ideas.length
-                : ideas.filter((idea) => idea.platform === label).length}
-            </ToggleGroupItem>
-          ))}
+      <div className="flex min-w-0 flex-wrap items-center justify-between gap-3" data-testid="ideas-toolbar">
+        <ToggleGroup type="single" variant="outline" size="sm" value={platform}
+          onValueChange={value => { if (value) setPlatform(value); }} aria-label="灵感平台筛选">
+          {["全部", "起点", "番茄"].map(label => <ToggleGroupItem key={label} value={label}>{label} · {label === "全部" ? ideas.length : ideas.filter(idea => idea.platform === label).length}</ToggleGroupItem>)}
         </ToggleGroup>
+        <div className="ml-auto flex flex-wrap items-center gap-2">
+          <Select value={mode} disabled={appending} onValueChange={v => setMode(v as "起点" | "番茄")}>
+            <SelectTrigger size="sm" aria-label="灵感生成平台" className="w-32"><SelectValue /></SelectTrigger>
+            <SelectContent><SelectGroup><SelectItem value="起点">起点模式</SelectItem><SelectItem value="番茄">番茄模式</SelectItem></SelectGroup></SelectContent>
+          </Select>
+          <Button size="sm" disabled={appending} onClick={() => void append()}><Plus data-icon="inline-start" />添加 1 个灵感</Button>
+        </div>
       </div>
-      <div className="flex flex-wrap items-center gap-3">
-        <span className="text-sm text-muted-foreground">生成模式</span>
-        <Select value={mode} disabled={appending} onValueChange={v => setMode(v as "起点" | "番茄")}>
-          <SelectTrigger aria-label="灵感生成平台" className="w-36"><SelectValue /></SelectTrigger>
-          <SelectContent><SelectGroup><SelectItem value="起点">起点模式</SelectItem><SelectItem value="番茄">番茄模式</SelectItem></SelectGroup></SelectContent>
-        </Select>
-        <Button variant="outline" size="sm" disabled={appending} onClick={() => void append()}><Plus data-icon="inline-start" />添加 1 个灵感</Button>
-      </div>
-      {job && <div className="flex flex-col gap-3 rounded-lg border p-4" role="status">
-        <p className="text-sm">{job.platform}模式 · {job.message} · 已完成 {job.completed}/3 阶段</p>
-        {job.status === "running" && <p className="text-xs text-muted-foreground">此阶段已等待 {Math.max(0, Math.floor((clock - Date.parse(job.updatedAt)) / 1000))} 秒；进度按实际完成阶段更新。</p>}
+      {job?.status === "failed" ? <Alert variant="destructive" data-testid="idea-job-failed">
+        <CircleAlert />
+        <AlertTitle>这次灵感未能保存 · {job.platform}模式</AlertTitle>
+        <AlertDescription>
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="flex min-w-0 flex-1 flex-col gap-2">
+              <p>{job.completed >= 1 ? "构思已完成，审稿或保存未通过检查。原有灵感保留。" : "生成未完成，原有灵感保留。"}</p>
+              <details><summary className="cursor-pointer">查看失败原因</summary><p className="mt-2 break-words whitespace-pre-wrap">{job.message}{job.message.startsWith("审稿连续未通过") ? "。这条旧任务未记录具体失败项，重试后会显示缺少的字段或重复项。" : ""}</p></details>
+            </div>
+            <Button variant="outline" size="sm" disabled={controlling || appending} onClick={() => void control("resume")}><RotateCcw data-icon="inline-start" />{job.completed >= 1 ? "重试审稿" : "重试生成"}</Button>
+          </div>
+        </AlertDescription>
+      </Alert> : job && ["running", "paused"].includes(job.status) ? <div className="flex flex-col gap-3 rounded-lg border bg-muted/20 px-4 py-3" role="status">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex min-w-0 flex-1 flex-col gap-1">
+            <p className="text-sm font-medium">{job.platform}模式 · {job.status === "paused" ? "已暂停" : job.completed === 0 ? "正在构思" : job.completed === 1 ? "正在审稿" : "正在保存"}<span className="ml-2 font-normal text-muted-foreground">{job.completed}/3 阶段完成</span></p>
+            <p className="text-xs text-muted-foreground">{job.status === "running" ? `${job.message} · 此阶段已等待 ${Math.max(0, Math.floor((clock - Date.parse(job.updatedAt)) / 1000))} 秒` : "已完成的阶段已保存，继续时从未完成阶段重试。"}</p>
+          </div>
+          <div className="flex items-center gap-1">
+            <Button variant="outline" size="sm" disabled={controlling || (job.status === "running" && job.completed >= 2)} onClick={() => void control(job.status === "paused" ? "resume" : "pause")}>
+              {job.status === "paused" ? <Play data-icon="inline-start" /> : <Pause data-icon="inline-start" />}{job.status === "paused" ? "继续生成" : "暂停"}
+            </Button>
+            <Button variant="ghost" size="sm" disabled={controlling || (job.status === "running" && job.completed >= 2)} onClick={() => void control("cancel")}><X data-icon="inline-start" />取消生成</Button>
+          </div>
+        </div>
         <Progress value={job.completed / 3 * 100} aria-label="灵感生成阶段进度" />
-        {["running", "paused"].includes(job.status) && <div className="flex flex-wrap items-center gap-2">
-          <Button variant="outline" size="sm" disabled={controlling || (job.status === "running" && job.completed >= 2)} onClick={() => void control(job.status === "paused" ? "resume" : "pause")}>
-            {job.status === "paused" ? <Play data-icon="inline-start" /> : <Pause data-icon="inline-start" />}{job.status === "paused" ? "继续生成" : "暂停"}
-          </Button>
-          <Button variant="ghost" size="sm" disabled={controlling || (job.status === "running" && job.completed >= 2)} onClick={() => void control("cancel")}><X data-icon="inline-start" />取消生成</Button>
-          <span className="text-xs text-muted-foreground">暂停会中止当前请求；已完成阶段保留，继续时重试未完成阶段。</span>
-        </div>}
-      </div>}
-      <p className="ideas-note">每次添加一个完整方案，使用已有报告避免重复。构思 → 审稿 → 保存。</p>
+      </div> : job && <p className="flex items-center gap-2 text-xs text-muted-foreground" role="status">{job.status === "completed" ? <CheckCircle2 className="size-4" /> : <X className="size-4" />}{job.message}</p>}
       {appendError && <Alert variant="destructive"><AlertDescription>{appendError}</AlertDescription></Alert>}
       {!visible.length && (
         <Empty>
@@ -148,19 +146,13 @@ function IdeaCard({
   return (
     <article className="idea-proposal">
       <header>
-        <span className="eyebrow">
-          方案 {String(index + 1).padStart(2, "0")}{" "}
-          {idea.platform && `· ${idea.platform}`}{" "}
-          {idea.genre && `· ${idea.genre}`}
-        </span>
-        <h3>{idea.title}</h3>
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={() => onCreation(ideaToCreationSeed(idea))}
-        >
-          以此创建作品
-        </Button>
+        <div className="flex min-w-0 flex-wrap items-start justify-between gap-3" data-testid="idea-card-heading">
+          <div className="min-w-0 flex-1">
+            <span className="eyebrow">方案 {String(index + 1).padStart(2, "0")} {idea.platform && `· ${idea.platform}`} {idea.genre && `· ${idea.genre}`}</span>
+            <h3>{idea.title}</h3>
+          </div>
+          <Button variant="outline" size="sm" onClick={() => onCreation(ideaToCreationSeed(idea))}><NotebookPen data-icon="inline-start" />以此创建作品</Button>
+        </div>
         {idea.sellingPoint && (
           <p className="idea-selling-point">{idea.sellingPoint}</p>
         )}

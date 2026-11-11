@@ -3,7 +3,7 @@ import { invoke } from "./tauri";
 // All persistent writes go through the Rust backend, in invocation order.
 let cache: Record<string, string> = {};
 let queue: Promise<void> = Promise.resolve();
-const supported = (key: string) => ["inkscope-model", "inkscope-reader-v1", "inkscope-speech-v1", "inkscope-writer-v1"].includes(key) || /^inkscope-creation-(draft|conflict)-/.test(key);
+const supported = (key: string) => ["inkscope-model", "inkscope-reader-v1", "inkscope-speech-v1", "inkscope-writer-v1"].includes(key) || /^inkscope-creation-(draft|conflict)-/.test(key) || key.startsWith("inkscope-volume-tree-");
 export async function initializeStorage() {
   const legacy: Record<string, string> = {};
   try {

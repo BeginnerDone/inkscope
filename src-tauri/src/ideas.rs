@@ -11,7 +11,7 @@ pub const SCHEMA: &str = r#"{
     "sourceAnchor": "继承的情绪价值及原作转述依据，缺资料时说明",
     "convention": "本题材的一条具体惯例", "ruleBreak": "改变什么规则，由此发生什么新冲突",
     "difference": "与原作最核心的因果差异",
-    "differences": [{"axis": "主角目标/核心机制/对抗关系/推进路径", "original": "原作做法或资料不足", "proposal": "新作做法", "consequence": "因此必然不同的剧情"}],
+    "differences": [{"axis": "仅从主角目标、核心机制、对抗关系、推进路径中选一个，不要改写名称", "original": "原作做法或资料不足", "proposal": "新作做法", "consequence": "因此必然不同的剧情"}],
     "opening": [{"chapter": "第一章/第二章/第三章", "event": "事件与主角主动选择", "reward": "本章进展、所得及代价", "hook": "具体章尾追问"}],
     "firstPayoff": "铺垫的欲望、争取方式、见证或事实、实际回报、代价、下一期待",
     "storyEngine": "可持续产生目标、阻力、收益和代价的机制",
@@ -60,39 +60,32 @@ pub fn validate_batch(value: &Value, platforms: &[&str]) -> Result<(), String> {
 }
 
 pub fn validate_count(value: &Value, platforms: &[&str], count: usize) -> Result<(), String> {
-    let fail = || format!("灵感结果结构不完整，需要{}每个平台各{count}个完整方案。已保存的方案不会被覆盖。", platforms.join("、"));
-    let ideas = value["ideas"].as_array().ok_or_else(fail)?;
-    if value["ideasVersion"] != 2 || ideas.len() != platforms.len() * count {
-        return Err(fail());
-    }
+    let list=value["ideas"].as_array().ok_or("返回结果缺少 ideas 方案列表")?;
+    if value["ideasVersion"] != 2 {return Err("返回结果缺少正确的方案版本 ideasVersion=2".into());}
+    if list.len()!=platforms.len()*count {return Err(format!("本次需要 {} 个方案，模型返回了 {} 个",platforms.len()*count,list.len()));}
     for platform in platforms {
-        if ideas.iter().filter(|idea| idea["platform"].as_str() == Some(*platform)).count() != count {
-            return Err(fail());
-        }
+        let actual=list.iter().filter(|idea|idea["platform"].as_str()==Some(*platform)).count();
+        if actual!=count {return Err(format!("需要{platform}模式的 {count} 个方案，符合平台要求的只有 {actual} 个"));}
     }
-    ensure_distinct(&[], ideas)?;
-    for idea in ideas {
-        for field in ["title", "genre", "audience", "sellingPoint", "premise", "sourceAnchor",
-            "convention", "ruleBreak", "difference", "firstPayoff", "storyEngine",
-            "platformFit", "alternatePlatform", "risk", "validation"] {
-            if !nonempty(&idea[field]) { return Err(fail()); }
+    ensure_distinct(&[],list)?;
+    for (index,idea) in list.iter().enumerate() {
+        let fail=|detail:&str|format!("第 {} 个方案{detail}",index+1);
+        for (field,label) in [("title","书名"),("genre","题材"),("audience","目标读者"),("sellingPoint","一句话卖点"),("premise","故事简介"),("sourceAnchor","原作依据"),("convention","题材惯例"),("ruleBreak","新规则"),("difference","原创差异"),("firstPayoff","首次爽点"),("storyEngine","连载机制"),("platformFit","平台适配"),("alternatePlatform","另一平台改写方向"),("risk","风险与修正"),("validation","试读验证")]{
+            if !nonempty(&idea[field]){return Err(fail(&format!("缺少“{label}”（{field}）")));}
         }
-        for (field, fields) in [
-            ("differences", &["axis", "original", "proposal", "consequence"][..]),
-            ("opening", &["chapter", "event", "reward", "hook"][..]),
-            ("escalation", &["stage", "conflict", "payoff"][..]),
-        ] {
-            let rows = idea[field].as_array().ok_or_else(fail)?;
-            if rows.len() < 3 || (field != "differences" && rows.len() != 3)
-                || rows.iter().any(|row| fields.iter().any(|key| !nonempty(&row[*key]))) {
-                return Err(fail());
+        for (field,label,fields) in [
+            ("differences","实质差异",&["axis","original","proposal","consequence"][..]),
+            ("opening","前三章规划",&["chapter","event","reward","hook"][..]),
+            ("escalation","阶段推进",&["stage","conflict","payoff"][..]),
+        ]{
+            let rows=idea[field].as_array().ok_or_else(||fail(&format!("的“{label}”不是列表（{field}）")))?;
+            if rows.len()<3 || (field!="differences" && rows.len()!=3){return Err(fail(&format!("的“{label}”需要{}三项，实际 {} 项",if field=="differences"{"至少"}else{"恰好"},rows.len())));}
+            for (row_index,row) in rows.iter().enumerate(){
+                for key in fields{if !nonempty(&row[*key]){return Err(fail(&format!("的“{label}”第 {} 项缺少 {key}",row_index+1)));}}
             }
         }
-        let axes: std::collections::HashSet<_> = idea["differences"].as_array().unwrap().iter()
-            .filter_map(|row| row["axis"].as_str())
-            .filter(|axis| ["主角目标", "核心机制", "对抗关系", "推进路径"].contains(axis))
-            .collect();
-        if axes.len() < 3 { return Err(fail()); }
+        let axes:std::collections::HashSet<_>=idea["differences"].as_array().unwrap().iter().filter_map(|row|row["axis"].as_str()).filter(|axis|["主角目标","核心机制","对抗关系","推进路径"].contains(axis)).collect();
+        if axes.len()<3{return Err(fail("的实质差异需要至少三个不同维度，axis 须从“主角目标、核心机制、对抗关系、推进路径”中选择"));}
     }
     Ok(())
 }
@@ -170,6 +163,16 @@ mod tests {
             copy["title"]=json!(format!("方案{i}")); copy["sellingPoint"]=json!(format!("卖点{i}")); copy
         }).collect::<Vec<_>>());
         result
+    }
+
+    #[test]
+    fn validation_reports_the_exact_missing_field_and_difference_requirement(){
+        let mut value=complete_result();value["ideas"][0]["firstPayoff"]=serde_json::json!("");
+        assert!(validate(&value).unwrap_err().contains("首次爽点"));
+        let mut value=complete_result();value["ideas"][0]["opening"][1]["hook"]=serde_json::Value::Null;
+        assert!(validate(&value).unwrap_err().contains("第 2 项缺少 hook"));
+        let mut value=complete_result();for row in value["ideas"][0]["differences"].as_array_mut().unwrap(){row["axis"]=serde_json::json!("其他");}
+        assert!(validate(&value).unwrap_err().contains("至少三个不同维度"));
     }
 
     #[test]

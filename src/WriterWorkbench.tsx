@@ -1,3 +1,7 @@
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { useVolumeExpansion } from "./lib/use-volume-expansion";
+import { useChapterIndex } from "./lib/use-chapter-index";
+import { WindowedChapters } from "./WindowedChapters";
 import { useEffect, useRef, useState } from "react";
 import {
   ArrowLeft,
@@ -13,6 +17,7 @@ import {
   Bookmark,
   Settings2,
   Ellipsis,
+  ChevronRight,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -82,15 +87,13 @@ export function WriterWorkbench({
 }) {
   const draft = useProjectDraft(initial),
     p = draft.project;
-  const chapters = p.volumes.flatMap((v) =>
-    p.documents.filter((d) => d.kind === "chapter" && d.volumeId === v.id),
-  );
+  const { chapters, byVolume, counts, total } = useChapterIndex(p);
   const [locked, setLocked] = useState(false),
     [chapterLoading, setChapterLoading] = useState(true);
   const [chapterId, setChapterId] = useState(chapters[0]?.id || "");
   const chapter = chapters.find((d) => d.id === chapterId);
+  const volumeTree = useVolumeExpansion(p.id, chapter?.volumeId);
   const [panel, setPanel] = useState<Panel>("none");
-  const surface = useRef<HTMLDivElement>(null);
   const [resourceId, setResourceId] = useState("");
   const [focus, setFocus] = useState(false),
     [error, setError] = useState("");
@@ -159,7 +162,6 @@ export function WriterWorkbench({
   const trash = p.documents.filter(isTrash);
   const activeRef = useRef({ chapter, chapterId, selection });
   activeRef.current = { chapter, chapterId, selection };
-  const total = chapters.reduce((n, d) => n + countText(d.content), 0);
   const update = (id: string, patch: Partial<CreationDoc>) =>
     draft.change((v) => ({
       ...v,
@@ -168,6 +170,8 @@ export function WriterWorkbench({
   const detail = (d: CreationDoc, key: string, value: string) =>
     update(d.id, { details: { ...d.details, [key]: value } });
   const openChapter = (id: string) => {
+    const target = chapters.find(d => d.id === id);
+    if (target) volumeTree.setOpen(target.volumeId, true);
     request.current++;
     setChapterId(id);
     setPanel("none");
@@ -207,6 +211,7 @@ export function WriterWorkbench({
     }
   };
   const addChapter = (volumeId: string) => {
+    volumeTree.setOpen(volumeId, true);
     const d: CreationDoc = {
       id: uid(),
       kind: "chapter",
@@ -560,12 +565,6 @@ export function WriterWorkbench({
         fullSource,
       });
     });
-  useEffect(() => {
-    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
-    const target = surface.current?.querySelector(panel === "none" || focus ? ".writer-main" : ".writer-panel");
-    const animation = target?.animate([{ opacity: .45, transform: "translateY(5px)" }, { opacity: 1, transform: "translateY(0)" }], { duration: 240, easing: "cubic-bezier(.22,1,.36,1)" });
-    return () => animation?.cancel();
-  }, [chapterId, panel, focus]);
   const canonical = (kind: string) => p.documents.find((d) => d.kind === kind);
   const resources = (category: string) =>
     p.documents.filter(
@@ -574,7 +573,7 @@ export function WriterWorkbench({
   const materialDocs = [canonical(panel === "outline" ? "outline" : "rules"), ...(panel === "background" ? [canonical("characters")] : []), ...resources(panel === "outline" ? "outline" : "rules"), ...(panel === "background" ? [...resources("characters"), ...resources("reference")] : [])].filter((d): d is CreationDoc => !!d);
   const activeMaterial = materialDocs.find(d => d.id === resourceId) || materialDocs[0];
   return (
-    <div ref={surface} className={`writer-workspace${focus ? " writer-focus" : ""}`}>
+    <div className={`writer-workspace${focus ? " writer-focus" : ""}`}>
       {!focus && (
         <header className="writer-header">
           <div>
@@ -595,9 +594,9 @@ export function WriterWorkbench({
             <span className="writer-save-state"><i />{draft.state}</span>
           </div>
           <div>
-            <Button variant="ghost" size="sm" onClick={() => {setResourceId("");setPanel("background");}}>设定</Button>
-            <Button variant="ghost" size="sm" onClick={() => {setResourceId("");setPanel("outline");}}>大纲</Button>
-            <Button variant="ghost" size="sm" onClick={() => setPanel("foreshadow")}>伏笔 <span>{marks.length}</span></Button>
+            <Button variant="ghost" size="sm" onClick={() => {setResourceId("");setPanel("background");}}><FileText data-icon="inline-start" />设定</Button>
+            <Button variant="ghost" size="sm" onClick={() => {setResourceId("");setPanel("outline");}}><Layers3 data-icon="inline-start" />大纲</Button>
+            <Button variant="ghost" size="sm" onClick={() => setPanel("foreshadow")}><Bookmark data-icon="inline-start" />伏笔 <span>{marks.length}</span></Button>
             <Button variant="ghost" size="sm" onClick={() => setSettings(true)}>
               <Settings2 />写作辅助
             </Button>
@@ -661,17 +660,10 @@ export function WriterWorkbench({
             </header>
             <div className="writer-tree">
               {p.volumes.map((v) => (
-                <section key={v.id}>
+                <Collapsible key={v.id} open={volumeTree.isOpen(v.id)} onOpenChange={open => volumeTree.setOpen(v.id, open)}>
                   <div className="writer-volume">
-                    <button onClick={() => editVolume(v)}><FolderOpen aria-hidden="true" /><span>{v.title}</span></button>
-                    <Button
-                      variant="ghost"
-                      size="icon-sm"
-                      aria-label={`向${v.title}新建章节`}
-                      onClick={() => addChapter(v.id)}
-                    >
-                      <Plus />
-                    </Button>
+                    <CollapsibleTrigger asChild><Button variant="ghost" size="sm" className="volume-toggle" title={v.title} aria-label={`${volumeTree.isOpen(v.id) ? "折叠" : "展开"}${v.title}`}><ChevronRight data-icon="inline-start" /><span>{v.title}</span></Button></CollapsibleTrigger>
+                    <Button variant="ghost" size="icon-sm" aria-label={`设置${v.title}`} title="分卷设置" onClick={() => editVolume(v)}><Settings2 /></Button>
                     <Button
                       variant="ghost"
                       size="icon-sm"
@@ -683,20 +675,19 @@ export function WriterWorkbench({
                     >
                       <Trash2 />
                     </Button>
+                    <Button variant="ghost" size="icon-sm" aria-label={`向${v.title}新建章节`} title="新建章节" onClick={() => addChapter(v.id)}><Plus /></Button>
                   </div>
-                  {chapters
-                    .filter((d) => d.volumeId === v.id)
-                    .map((d) => (
+                  <CollapsibleContent><WindowedChapters chapters={byVolume.get(v.id) || []} selectedId={chapterId}>{(d) => (
                       <div
                         key={d.id}
                         className={`writer-chapter-link${d.id === chapterId ? " is-active" : ""}`}
                       >
-                        <button onClick={() => openChapter(d.id)}>
+                        <Button variant="ghost" className="writer-chapter-open" aria-current={d.id === chapterId ? "page" : undefined} onClick={() => openChapter(d.id)}><FileText data-icon="inline-start" />
                           <span>{d.title}</span>
                           <small>
-                            {countText(d.content).toLocaleString()} 字
+                            {counts.get(d.id)?.toLocaleString()} 字
                           </small>
-                        </button>
+                        </Button>
                         <Button
                           variant="ghost"
                           size="icon-sm"
@@ -708,8 +699,8 @@ export function WriterWorkbench({
                           <Trash2 />
                         </Button>
                       </div>
-                    ))}
-                </section>
+                    )}</WindowedChapters></CollapsibleContent>
+                </Collapsible>
               ))}
             </div>
 
@@ -718,7 +709,7 @@ export function WriterWorkbench({
         <main className="writer-main">
           {chapter ? (
             <>
-              <div className="writer-manuscript-label"><Button variant="ghost" size="sm" onClick={()=>{const v=p.volumes.find(v=>v.id===chapter.volumeId);if(v)editVolume(v);}}>{p.volumes.find(v=>v.id===chapter.volumeId)?.title} · 卷设置</Button><span>{countText(chapter.content).toLocaleString()} 字</span></div>
+              <div className="writer-manuscript-label"><Button variant="ghost" size="sm" onClick={()=>{const v=p.volumes.find(v=>v.id===chapter.volumeId);if(v)editVolume(v);}}>{p.volumes.find(v=>v.id===chapter.volumeId)?.title} · 卷设置</Button><span>{counts.get(chapter.id)?.toLocaleString()} 字</span></div>
               {p.guidance[`volume-goal-${chapter.volumeId}`] && <div className="writer-volume-goal">本卷目标：{p.guidance[`volume-goal-${chapter.volumeId}`]}</div>}
               <Input
                 className="writer-title"
@@ -922,7 +913,7 @@ export function WriterWorkbench({
           <footer className="writer-status">
             <span>
               全书 {total.toLocaleString()} 字 · 本章{" "}
-              {countText(chapter?.content || "").toLocaleString()} 字
+              {(counts.get(chapterId) || 0).toLocaleString()} 字
               {selection && ` · 已选 ${countText(selection.quote)} 字`}
             </span>
             <span>
@@ -1324,7 +1315,7 @@ export function WriterWorkbench({
               {(panel === "tools" || panel === "polish") && (
                 <div className="writer-review-tool">
                   <div className="writer-tool-intro"><h3>{panel === "tools" ? "章节审核" : "文字润色"}</h3><p>{panel === "tools" ? "选择需要审核的章节，获得结构、情节和表达建议。" : "保留你的文风，先预览修改，再决定是否采用。"}</p></div>
-                  {panel === "tools" ? <><div className="writer-review-chapters">{chapters.map(d => <label className="writer-check" key={d.id}><Checkbox checked={toolChapters.includes(d.id)} onCheckedChange={v=>setToolChapters(ids=>v === true ? [...ids,d.id] : ids.filter(id=>id!==d.id))}/><span>{d.title}</span><small>{countText(d.content).toLocaleString()} 字</small></label>)}</div><Button disabled={busy || !toolChapters.length} onClick={()=>aiTool("review")}>{busy ? "审核中…" : "审核所选章节"}</Button></> : <><div className="writer-polish-preview"><strong>{chapter?.title || "尚未选择章节"}</strong><p>{selection ? selection.quote : chapter?.content || "返回正文，写下一段文字后再润色。"}</p></div><Button disabled={busy || !chapter?.content} onClick={()=>aiTool("polish")}>{busy ? "润色中…" : selection ? "润色选中文字" : "润色当前章"}</Button></>}
+                  {panel === "tools" ? <><div className="writer-review-chapters">{chapters.map(d => <label className="writer-check" key={d.id}><Checkbox checked={toolChapters.includes(d.id)} onCheckedChange={v=>setToolChapters(ids=>v === true ? [...ids,d.id] : ids.filter(id=>id!==d.id))}/><span>{d.title}</span><small>{counts.get(d.id)?.toLocaleString()} 字</small></label>)}</div><Button disabled={busy || !toolChapters.length} onClick={()=>aiTool("review")}>{busy ? "审核中…" : "审核所选章节"}</Button></> : <><div className="writer-polish-preview"><strong>{chapter?.title || "尚未选择章节"}</strong><p>{selection ? selection.quote : chapter?.content || "返回正文，写下一段文字后再润色。"}</p></div><Button disabled={busy || !chapter?.content} onClick={()=>aiTool("polish")}>{busy ? "润色中…" : selection ? "润色选中文字" : "润色当前章"}</Button></>}
                 </div>
               )}
               {panel === "trash" && (

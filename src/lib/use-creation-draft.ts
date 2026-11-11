@@ -72,10 +72,13 @@ export function useProjectDraft(initial: CreationProject) {
     saving.current = request;
     try {
       const result = await request;
-      saved.current = result;
+      // The server validates and saves this snapshot without changing its documents.
+      // Retain their identity so unrelated UI updates can reuse chapter indexes.
+      const committed = { ...snapshot, revision: result.revision, updatedAt: result.updatedAt };
+      saved.current = committed;
       current.current =
         current.current === snapshot
-          ? result
+          ? committed
           : {
               ...current.current,
               revision: result.revision,

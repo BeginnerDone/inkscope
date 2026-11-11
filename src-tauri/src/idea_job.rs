@@ -89,12 +89,22 @@ async fn work(app:AppHandle,job:Job,epoch:u64,_operation:completeness::BookOpera
     if state.reviewed.is_none(){
         let mut messages=json!([{"role":"system","content":system},{"role":"user","content":prompt},{"role":"assistant","content":candidate.to_string()},{"role":"user","content":"进行第二轮编辑审稿。只交付指定平台的一个完整方案。对照原作与已有方案，重写换皮、雷同、开篇无兑现、无法持续的内容，保留三章开篇、三个阶段、至少三个实质差异维度。返回完整 JSON，只含 ideasVersion 和 ideas。"}]);
         let mut accepted=None;
-        for _ in 0..3{
+        let mut last_error=String::new();
+        for attempt in 0..3{
             let value=call_deepseek(&config,messages.clone(),12_000).await?;
             let check=ideas::validate_count(&value,&[&state.platform],1).and_then(|_|ideas::ensure_distinct(&existing,value["ideas"].as_array().unwrap()));
-            match check {Ok(())=>{accepted=Some(value);break;},Err(error)=>messages.as_array_mut().unwrap().push(json!({"role":"user","content":format!("结构或避重检查未通过：{error}。重新生成完整的单个方案JSON。上一结果：{value}")}))}
+            match check {Ok(())=>{accepted=Some(value);break;},Err(error)=>{
+                last_error=error;
+                if attempt<2 {
+                    let mut runtime=job.lock().map_err(|_|"任务锁不可用")?;
+                    if !runtime.accepts(epoch){return Err("任务已暂停或取消".into());}
+                    runtime.state.message=format!("2/3 · 第 {} 次修正：{}",attempt+2,last_error);
+                    runtime.state.updated_at=now();persist(&app,&runtime.state)?;
+                }
+                messages.as_array_mut().unwrap().push(json!({"role":"user","content":format!("结构或避重检查未通过：{last_error}。保留合格内容，修正指出的问题，重新生成完整的单个方案JSON。上一结果：{value}")}));
+            }}
         }
-        checkpoint(&app,&job,epoch,accepted.ok_or("审稿连续未通过，原方案保留，可重新生成")?,true)?;
+        checkpoint(&app,&job,epoch,accepted.ok_or_else(||format!("方案连续三次未通过完整性检查：{last_error}。原有方案未修改。"))?,true)?;
     }
     // Serialize cancellation against the short atomic save. A successful cancel
     // can never race a late model response into writing a proposal.
@@ -145,7 +155,7 @@ pub fn control_idea_job(app:AppHandle,id:String,task_id:String,action:String,con
         let mut runtime=job.lock().map_err(|_|"任务锁不可用")?;
         if runtime.state.id!=task_id{return Err("任务已更新，请刷新".into());}
         if action=="resume"{
-            if runtime.state.status!="paused"{return Err("只能继续已暂停任务".into());}
+            if !["paused","failed"].contains(&runtime.state.status.as_str()){return Err("只能继续已暂停或失败任务".into());}
             unchanged(&app,&runtime.state)?;
         }else{
             if !["running","paused"].contains(&runtime.state.status.as_str()) || (runtime.state.status=="running" && runtime.state.completed>=2){return Err("任务已结束或正在保存，无法更改".into());}

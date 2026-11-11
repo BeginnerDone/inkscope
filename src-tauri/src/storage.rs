@@ -19,6 +19,7 @@ fn valid(key: &str) -> bool {
         "inkscope-model" | "inkscope-reader-v1" | "inkscope-speech-v1" | "inkscope-writer-v1"
     ) || key.starts_with("inkscope-creation-draft-")
         || key.starts_with("inkscope-creation-conflict-")
+        || key.starts_with("inkscope-volume-tree-")
 }
 fn migrate(
     conn: &mut Connection,
@@ -80,10 +81,11 @@ mod tests {
         let data = BTreeMap::from([
             ("inkscope-model".into(), "original".into()),
             ("inkscope-creation-conflict-a".into(), "full draft".into()),
+            ("inkscope-volume-tree-project".into(), r#"{"v1":false,"v2":true}"#.into()),
             ("unrelated".into(), "ignore".into()),
         ]);
         let result = migrate(&mut conn, data).unwrap();
-        assert_eq!(result.len(), 2);
+        assert_eq!(result.len(), 3);
         let result = migrate(
             &mut conn,
             BTreeMap::from([("inkscope-model".into(), "stale".into())]),
@@ -91,5 +93,6 @@ mod tests {
         .unwrap();
         assert_eq!(result["inkscope-model"], "original");
         assert_eq!(result["inkscope-creation-conflict-a"], "full draft");
+        assert_eq!(result["inkscope-volume-tree-project"], r#"{"v1":false,"v2":true}"#);
     }
 }

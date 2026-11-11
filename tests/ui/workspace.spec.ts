@@ -1552,13 +1552,33 @@ test("single idea supports independent mode progress pause resume and cancellati
   expect(calls.some((call:any)=>["start_analysis","refresh_legado_book"].includes(call.command))).toBe(false);
 });
 
-test("failed single idea task preserves cards and allows another generation", async ({page})=>{
+test("failed single idea shows cause and checkpoint retry without a misleading progress bar", async ({page})=>{
   await readyReport(page,{appendFails:true});
   await page.getByRole("tab",{name:"原创灵感 4"}).click();
-  await page.getByRole("button",{name:"添加 1 个灵感",exact:true}).click();
+  const toolbar=page.getByTestId("ideas-toolbar");
+  const add=page.getByRole("button",{name:"添加 1 个灵感",exact:true});
+  const filter=page.getByRole("radio",{name:"全部 · 4",exact:true});
+  const filterRect=await filter.boundingBox(), addRect=await add.boundingBox();
+  expect(addRect!.x).toBeGreaterThan(filterRect!.x+filterRect!.width);
+  expect(Math.abs(addRect!.y-filterRect!.y)).toBeLessThan(10);
+  await expect(add.locator("svg")).toHaveCount(1);
+  const heading=page.getByTestId("idea-card-heading").first();
+  const create=heading.getByRole("button",{name:"以此创建作品",exact:true});
+  await expect(create.locator("svg")).toHaveCount(1);
+  await add.click();
+  await expect(page.getByRole("alert").filter({hasText:"这次灵感未能保存"})).toBeVisible();
+  await expect(page.getByRole("progressbar",{name:"灵感生成阶段进度"})).toHaveCount(0);
+  await page.getByText("查看失败原因",{exact:true}).click();
   await expect(page.getByText(/测试生成失败，旧方案保留/)).toBeVisible();
   await expect(page.locator(".idea-proposal")).toHaveCount(4);
-  await expect(page.getByRole("button",{name:"添加 1 个灵感",exact:true})).toBeEnabled();
+  await expect(add).toBeEnabled();
+  await page.screenshot({path:"test-results/ideas-toolbar-failure.png"});
+  await page.setViewportSize({width:980,height:760});
+  expect(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth)).toBe(true);
+  await expect(create).toBeVisible();
+  await page.screenshot({path:"test-results/ideas-toolbar-980.png"});
+  await page.getByRole("button",{name:"重试生成",exact:true}).click();
+  await expect.poll(()=>page.evaluate(()=>(window as any).__UI_TEST__.calls.filter((c:any)=>c.command==="control_idea_job").map((c:any)=>c.args.action))).toContain("resume");
 });
 
 test("reader with existing report hides start analysis", async ({page})=>{
